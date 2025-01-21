@@ -13,9 +13,9 @@ import pandas as pd
 from tqdm import tqdm
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
-    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar
+    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction
 )
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage
 
 
@@ -48,10 +48,59 @@ class MainWindow(QMainWindow):
         self.result_image = None
 
     def initUI(self):
+     # Create a menu bar
+        menu_bar = self.menuBar()
+
+        # Add "File" menu
+        file_menu = menu_bar.addMenu("File")
+
+        # Add actions to "File" menu
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Add "Mode" menu
+        mode_menu = menu_bar.addMenu("Mode")
+
+        # Add actions to "Mode" menu
+        clean_action = QAction("Clean Image", self)
+        clean_action.triggered.connect(self.clean_image)
+        mode_menu.addAction(clean_action)
+
+        process_action = QAction("Process Detection", self)
+        process_action.triggered.connect(self.process_detection)
+        mode_menu.addAction(process_action)
+
+        graph_action = QAction("Graphing", self)
+        graph_action.triggered.connect(self.graphing)
+        mode_menu.addAction(graph_action)
+
+        """1.0.0 Version base solo incorpora un modo
+            Movimientos grandes se hacen en la versión 0.1.0
+            Debugging es 0.0.1"""
+        self.image_widget = QLabel()
+        self.image_widget.setText("BETA APP 1.2.0") 
+        self.image_widget.setStyleSheet("QLabel { color : black; font: 36px; font-weight: bold; }")
+
+    def clean_image(self):
+        # Placeholder for cleaning image functionality
+        QMessageBox.information(self, "Clean Image", "Clean Image functionality is not implemented yet.")
+        return
+
+    def process_detection(self):
+        # Placeholder for processing detection functionality
+        
+
         # Panel izquierdo con controles
         self.control_widget = QWidget()
         self.control_layout = QVBoxLayout()
         self.control_widget.setLayout(self.control_layout)
+
+        self.image_widget = QLabel()
+        self.image_widget.setFixedSize(800, 800)
+        self.image_widget.setAlignment(Qt.AlignCenter)
+        self.image_widget.setText("Detector de Burbujas fase Beta. Seleccione un directorio de imágenes para comenzar.")
+        self.image_widget.setStyleSheet("QLabel { color : gray; font: 18px; }")
 
         # Botón para seleccionar directorio de imágenes
         self.select_dir_button = QPushButton("Seleccionar Directorio de Imágenes")
@@ -124,6 +173,13 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.control_widget)
         self.splitter.addWidget(self.image_widget)
         self.setCentralWidget(self.splitter)
+        QMessageBox.information(self, "Process Detection", "Process Detection functionality is usable.")
+
+    def graphing(self):
+        # Placeholder for graphing functionality
+        QMessageBox.information(self, "Graphing", "Graphing functionality is not implemented yet.")
+        return
+
 
     def select_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio de Imágenes", "")
@@ -149,15 +205,15 @@ class MainWindow(QMainWindow):
     def display_image(self, image_path):
         image = cv2.imread(image_path)
         if image is not None:
-            image = cv2.resize(image, (800, 800), interpolation=cv2.INTER_AREA)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             height, width, channel = image.shape
             bytes_per_line = 3 * width
             q_image = QImage(image.data, width, height, bytes_per_line, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_image)
-            self.image_widget.setPixmap(pixmap)
+            scaled_pixmap = QPixmap.fromImage(q_image).scaled(self.image_widget.size(), Qt.KeepAspectRatio)
+            self.image_widget.setPixmap(scaled_pixmap)
         else:
-            QMessageBox.warning(self, "Advertencia", "No se pudo cargar la imagen seleccionada.")
+            self.image_widget.setText("Imagen no válida o no se pudo cargar.")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
 
     def get_parameters(self):
         self.params = {
@@ -174,6 +230,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Advertencia", "Por favor, selecciona una imagen para procesar.")
             return
         self.get_parameters()
+        self.progress_bar.setValue(0)  # Inicializar la barra de progreso
+        self.image_widget.setText("Procesando... Esto puede tardar un poco")  # Mostrar mensaje de procesamiento
+        self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
+        QApplication.processEvents()  # Actualizar la interfaz
+
         result, valid_count, unpainted_percentage_adjusted, batch_data = self.process_single_image(self.current_image_path, self.params)
         if result is not None:
             self.result_image = result
@@ -182,7 +243,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Resultados", f"Se detectaron {valid_count} burbujas válidas.")
         else:
             QMessageBox.warning(self, "Advertencia", "No se pudo procesar la imagen con los parámetros actuales.")
-
+        self.progress_bar.setValue(100)
+        self.image_widget.setText("")  # Limpiar mensaje de procesamiento
     def display_result(self, result):
         # Convertir la imagen de resultado para mostrarla
         result = cv2.resize(result, (800, 800), interpolation=cv2.INTER_AREA)
@@ -193,8 +255,85 @@ class MainWindow(QMainWindow):
         pixmap = QPixmap.fromImage(q_image)
         self.image_widget.setPixmap(pixmap)
 
+    
+    def process_all_images(self):
+        if not self.image_paths:
+            QMessageBox.warning(self, "Advertencia", "No hay imágenes para procesar.")
+            self.image_widget.setText("No hay imágenes cargadas.")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 18px; }")
+            return
+        self.get_parameters()
+        all_batch_data = []
+        self.progress_bar.setValue(0)
+        self.processor_thread = ImageProcessor(self.image_paths, self.params)
+        self.processor_thread.progress.connect(self.update_progress)
+        self.processor_thread.finished.connect(self.on_processing_finished)
+        self.processor_thread.start()
+
+        if all_batch_data:
+            df_all = pd.DataFrame(all_batch_data)
+            # Mostrar resultados o guardarlos
+            QMessageBox.information(self, "Resultados", "Procesamiento en lote completado.")
+            # Crear un botón para descargar el archivo CSV
+            self.download_button = QPushButton("Descargar Resultados")
+            self.download_button.clicked.connect(lambda: self.download_csv(df_all))
+            self.control_layout.addWidget(self.download_button)
+
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    def on_processing_finished(self, df_all):
+        if not df_all.empty:
+            QMessageBox.information(self, "Resultados", "Procesamiento en lote completado.")
+            # Crear un botón para descargar el archivo CSV
+            self.download_button = QPushButton("Descargar Resultados")
+            self.download_button.clicked.connect(lambda: self.download_csv(df_all))
+            self.control_layout.addWidget(self.download_button)
+        else:
+            QMessageBox.warning(self, "Advertencia", "No se detectaron burbujas válidas en las imágenes.")
+        self.progress_bar.setValue(100)
+
+    def download_csv(self, df):
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(self, "Guardar Resultados", "", "CSV Files (*.csv);;All Files (*)", options=options)
+        if file_path:
+            df.to_csv(file_path, index=False)
+            QMessageBox.information(self, "Resultados", f"Resultados guardados en {file_path}")
+
+if __name__ == "__main__":
+
+
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+
+
+
+class ImageProcessor(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(pd.DataFrame)
+
+    def __init__(self, image_paths, params):
+        super().__init__()
+        self.image_paths = image_paths
+        self.params = params
+
+    def run(self):
+        all_batch_data = []
+        total_images = len(self.image_paths)
+        for idx, img_path in enumerate(self.image_paths):
+            result, valid_count, unpainted_percentage_adjusted, batch_data = self.process_single_image(img_path, self.params)
+            if batch_data is not None:
+                all_batch_data.extend(batch_data)
+            progress = int(((idx + 1) / total_images) * 100)
+            self.progress.emit(progress)
+
+        df_all = pd.DataFrame(all_batch_data)
+        self.finished.emit(df_all)
+
     def process_single_image(self, image_path, params):
-        # Reutilizamos tu código de procesamiento pero adaptado para trabajar dentro de la clase
+         # Reutilizamos tu código de procesamiento pero adaptado para trabajar dentro de la clase
         # Definir umbrales y parámetros iniciales
         max_area_threshold = params.get('max_area_threshold', 10500)
         min_area_threshold = params.get('min_area_threshold', 10)
@@ -271,12 +410,6 @@ class MainWindow(QMainWindow):
         else:
             print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is acceptable. Proceeding with results...")
 
-        if recalculate:
-            print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is too high. Recalculating with adjusted parameters...")
-            # Recalcular con ajustes
-            # Puedes agregar aquí parámetros de recalculación si lo deseas
-            # Por simplicidad, vamos a continuar con los mismos parámetros en este ejemplo
-
         # Proceso para identificar burbujas
         for lbl in range(1, labels.max() + 1):
             mask = (labels == lbl).astype(np.uint8)
@@ -328,37 +461,3 @@ class MainWindow(QMainWindow):
             return None, None, None, None
 
         return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
-
-    def process_all_images(self):
-        if not self.image_paths:
-            QMessageBox.warning(self, "Advertencia", "No hay imágenes para procesar.")
-            return
-        self.get_parameters()
-        all_batch_data = []
-        self.progress_bar.setValue(0)
-        total_images = len(self.image_paths)
-        for idx, img_path in enumerate(self.image_paths):
-            result, valid_count, unpainted_percentage_adjusted, batch_data = self.process_single_image(img_path, self.params)
-            if batch_data is not None:
-                all_batch_data.extend(batch_data)
-            progress = int(((idx + 1) / total_images) * 100)
-            self.progress_bar.setValue(progress)
-
-        if all_batch_data:
-            df_all = pd.DataFrame(all_batch_data)
-            # Mostrar resultados o guardarlos
-            QMessageBox.information(self, "Resultados", "Procesamiento en lote completado.")
-            # Puedes agregar funcionalidades para guardar los resultados en un archivo CSV
-            # Por ejemplo, guardar en 'resultados_burbujas.csv' en la misma carpeta
-            output_path = os.path.join(os.getcwd(), 'resultados_burbujas.csv')
-            df_all.to_csv(output_path, index=False)
-            QMessageBox.information(self, "Resultados", f"Resultados guardados en {output_path}")
-        else:
-            QMessageBox.warning(self, "Advertencia", "No se detectaron burbujas válidas en las imágenes.")
-        self.progress_bar.setValue(100)
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_())
