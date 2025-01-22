@@ -11,51 +11,66 @@ import math
 import random
 import pandas as pd
 from tqdm import tqdm
+import time 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
     QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction
 )
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer  
 from PyQt5.QtGui import QPixmap, QImage
 
 
 #QThread para procesar las imágenes
 class ImageProcessor(QThread):
     # Señales para comunicación con la GUI
-    progress_updated = pyqtSignal(int)             # Progreso del procesamiento
+    progress_updated = pyqtSignal(int, float, float)         # Progreso del procesamiento
     image_processed = pyqtSignal(np.ndarray, int)  # Imagen resultante y contador
     batch_finished = pyqtSignal(pd.DataFrame)      # Resultados finales del lote
-    error_occurred = pyqtSignal(str)               # Mensajes de error
+    error_occurred = pyqtSignal(str)  
+    
+                 # Mensajes de error
 
     def __init__(self, image_paths, params):
         super().__init__()
         self.image_paths = image_paths
         self.params = params
         self.is_running = True  # Bandera para controlar la ejecución
+        self.total_stages = 11  # Número total de etapas
+        self.avg_time_per_image = 0
+
 
     def run(self):
-        """ Método principal que se ejecuta en el hilo """
         try:
-            all_batch_data = []
+            self.start_time = time.time()
+            total_images = len(self.image_paths)
+            processed_images = 0
+            all_batch_data = []  # Inicializar lista para acumular datos
             total_images = len(self.image_paths)
             for idx, img_path in enumerate(self.image_paths):
                 if not self.is_running:
-                    break  # Detener si se solicita
+                    break
 
-                # Procesar la imagen
-                result, valid_count, _, batch_data = self.process_single_image(img_path, self.params)
+                # Procesar imagen y obtener resultados
+                result, _, _, batch_data = self.process_single_image(img_path, self.params)
+                valid_count = len(batch_data) if batch_data else 0
+                if batch_data is not None:
+                    if total_images > 1:# Si es solo una imagen, emitir el resultado
+                         all_batch_data.extend(batch_data)  # Acumular datos válidos
                 if result is not None:
                     all_batch_data.extend(batch_data)
-                    if total_images == 1:  # Si es solo una imagen, emitir el resultado
-                        self.image_processed.emit(result, valid_count)
+                    self.image_processed.emit(result, valid_count)
 
-                # Emitir el progreso
-                progress = int((idx + 1) / total_images * 100)
-                self.progress_updated.emit(progress)
+                processed_images += 1
+                avg_time_per_image = elapsed / (idx + 1) if idx > 0 else 0
+                remaining_time = avg_time_per_image * (total_images - (idx + 1))
+                progress = int(((idx + 1) / total_images) * 100)  # Fórmula corregida
+                elapsed = time.time() - self.start_time
+                self.progress_updated.emit(progress, elapsed, remaining_time)
+                
+                
+            self.progress_updated.emit(100, elapsed, 0)    
+            self.batch_finished.emit(pd.DataFrame(all_batch_data))
 
-            # Emitir los resultados del lote
-            if total_images > 1:
-                self.batch_finished.emit(pd.DataFrame(all_batch_data))
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
 
@@ -63,144 +78,163 @@ class ImageProcessor(QThread):
         """ Detener el procesamiento """
         self.is_running = False
     #The process for the images
+        
     def process_single_image(self, image_path, params):
-            max_area_threshold = params.get('max_area_threshold', 10500)
-            min_area_threshold = params.get('min_area_threshold', 10)
-            kernel_size = params.get('kernel_size', 3)
-            morph_iterations = params.get('morph_iterations', 2)
-            min_distance_peak = params.get('min_distance_peak', 8)
-
+        try:
+            start_time = time.time()
+            total_stages = 11  # Total de etapas definidas
+            current_stage = 0
+            
+            # Etapa 1: Cargar imagen
             image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
             if image is None:
                 return None, None, None, None
-            image_name = os.path.splitext(os.path.basename(image_path))[0]
-            height_img, width_img = image.shape[:2]
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # 1. Suavizar la imagen
+            # Etapa 2: Suavizar
             blur = cv2.GaussianBlur(image, (3, 3), 0)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # 2. Umbral Otsu
+            # Etapa 3: Umbral Otsu
             _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             binary = cv2.bitwise_not(binary)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # 3. Limpiar por morfología
+            # Etapa 4: Morfología
+            kernel_size = params.get('kernel_size', 3)
+            morph_iterations = params.get('morph_iterations', 2)
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
             binary_opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iterations)
-            # 4. Transformada de distancia
-            dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # 5. Picos locales
+            # Etapa 5: Transformada distancia
+            dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
+
+            # Etapa 6: Picos locales
+            min_distance_peak = params.get('min_distance_peak', 8)
             coordinates = peak_local_max(dist_transform, min_distance=min_distance_peak, threshold_abs=0.5)
             local_max = np.zeros(dist_transform.shape, dtype=bool)
             local_max[tuple(coordinates.T)] = True
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # Etiquetar burbujas
+            # Etapa 7: Etiquetado
             markers, _ = ndimage.label(local_max)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            # 6. Identificación de burbujas
+            # Etapa 8: Watershed
             labels = watershed(-dist_transform, markers, mask=binary_opened)
-            # 7. Resultado
-            num_labels = labels.max()
-            colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
-            valid_count = 0
-            batch_data = []
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-            scene_coordinate_system = 0.00
-            height_pixels, width_pixels = image.shape[:2]
-            escala_mm_px = 4.5 / 208  # Ajusta según corresponda
-
-            # Proceso para calcular porcentaje no pintado
+            # Etapa 9: Cálculo porcentaje
             total_pixels = binary_opened.size
             painted_pixels = np.count_nonzero(binary_opened)
-            unpainted_pixels = total_pixels - painted_pixels
-            unpainted_percentage = (unpainted_pixels / total_pixels) * 100
+            unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
             unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
+            
 
-            pre_value = 0
-            for lbl in range(1, num_labels + 1):
-                mask = (labels == lbl).astype(np.uint8)
-                area_px = cv2.countNonZero(mask)
-                x, y, w, h = cv2.boundingRect(mask)
-                aspect_ratio = w / h if h > 0 else 0
-
-                # Filtro preliminar de burbujas válidas
-                if 0.79 <= aspect_ratio <= 2.5 and min_area_threshold <= area_px <= max_area_threshold:
-                    pre_value += 1
-
-            # Condiciones según el porcentaje no pintado ajustado
-            recalculate = False
-            if unpainted_percentage_adjusted > 25 and pre_value < 500:
-                recalculate = True
-            elif unpainted_percentage_adjusted < 6.0 or pre_value < 100:
-                print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is too low or too high. Ignoring results...")
-                return None, None, None, None
-            else:
-                print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is acceptable. Proceeding with results...")
-
-            # Proceso para identificar burbujas
+            # Etapa 10: Filtro preliminar
+            valid_count = 0
             for lbl in range(1, labels.max() + 1):
                 mask = (labels == lbl).astype(np.uint8)
                 area_px = cv2.countNonZero(mask)
-                bubble_coordinates = coordinates[np.where(mask[tuple(coordinates.T)] == 1)]
                 x, y, w, h = cv2.boundingRect(mask)
                 aspect_ratio = w / h if h > 0 else 0
+                if 0.79 <= aspect_ratio <= 2.5 and params['min_area_threshold'] <= area_px <= params['max_area_threshold']:
+                   pass
+            current_stage += 1
+            #self.emit_progress(start_time, current_stage, total_stages)
 
-                if 0.7 <= aspect_ratio < 2.0 and min_area_threshold <= area_px <= max_area_threshold:
-                    # Calcular perímetro y otras métricas
-                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    if len(contours) > 0:
-                        perimeter_px = cv2.arcLength(contours[0], True)
-                    else:
-                        perimeter_px = 0.0
-
-                    diametro_px = math.sqrt((4 * area_px) / math.pi)
-                    area_mm2 = area_px * (escala_mm_px ** 2)
-                    perimetro_mm = perimeter_px * escala_mm_px
-                    diametro_mm = diametro_px * escala_mm_px
-
-                    # Asignar color basado en el área
-                    color = get_color_by_increment(area_px, increment=150)
-                    colored_result[labels == lbl] = color
-
-                    class_id = classify_by_size(area_px, increase=150)
-
-                    # Guardar datos
-                    id_value = str(valid_count)
-                    batch_data.append({
-                        'Imagen_idobject': image_name + '_' + id_value,
-                        'Scene_coordinate_system': scene_coordinate_system,
-                        'Area_px': area_px,
-                        'Area_mm2': area_mm2,
-                        'Perimetro_px': perimeter_px,
-                        'Perimetro_mm': perimetro_mm,
-                        'Diametro_px': diametro_px,
-                        'Diametro_mm': diametro_mm,
-                        'Escala_mm_por_px': escala_mm_px,
-                        'Porcentaje_no_pintado': unpainted_percentage_adjusted,
-                        'Coordenadas': bubble_coordinates.tolist(),
-                        'Class_id': class_id,
-                        'aspect_ratio': aspect_ratio
-                    })
-                    valid_count += 1
-
-            if valid_count < 150:
-                print(f"Burbujas detectadas ({valid_count}) es menor que 150. Ignorando resultados...")
-                return None, None, None, None
+            # Etapa 11: Procesamiento final
+            colored_result, batch_data, valid_count = self.process_bubbles(
+                labels, coordinates, params, unpainted_percentage_adjusted, image_path
+            )
+            #self.emit_progress(start_time, total_stages, total_stages)  # 100%
+            
             return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
 
-#Funciones unicas no se mueven
-def get_color_by_increment(area, increment=150):
-    # Determine the class (range) of the area
-    class_id = area // increment  # Integer division
-    random.seed(class_id)  # Ensure consistent color for the same class
-    return (
-        random.randint(0, 255), 
-        random.randint(0, 255), 
-        random.randint(0, 255)
-    ) 
-def classify_by_size(area,increase=150):
-    class_id = area // increase
-    return class_id
+        except Exception as e:
+            self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
+            return None, None, None, None
+
+    def emit_progress(self, start_time, current_stage, total_stages):
+        # En el método donde inicias el procesamiento
+      
+        elapsed = time.time() - start_time
+        avg_time_per_stage = elapsed / current_stage
+        remaining_time = avg_time_per_stage * (total_stages - current_stage)
+        progress = int((current_stage / total_stages) * 100)
+        self.progress_updated.emit(progress, elapsed, remaining_time)
+
+    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path):
+        colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
+        batch_data = []
+        image_name = os.path.splitext(os.path.basename(image_path))[0]
+        escala_mm_px = 4.5 / 208
+        valid_count = 0  # Inicializar contador
+
+
+        for lbl in range(1, labels.max() + 1):
+            mask = (labels == lbl).astype(np.uint8)
+            area_px = cv2.countNonZero(mask)
+            x, y, w, h = cv2.boundingRect(mask)
+            aspect_ratio = w / h if h > 0 else 0
+
+            if 0.7 <= aspect_ratio < 2.0 and params['min_area_threshold'] <= area_px <= params['max_area_threshold']:
+                # Cálculos de métricas
+                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                perimeter_px = cv2.arcLength(contours[0], True) if contours else 0.0
+                diametro_px = math.sqrt((4 * area_px) / math.pi)
+                class_id = self.classify_by_size(area_px, increase=150)  # Llamada corregida
+                color = self.get_color_by_increment(area_px, 150)
+                id_value = str(valid_count)
+                # Añadir a resultados
+                batch_data.append({
+                    'Imagen_idobject': f"{image_name}_{len(batch_data)}",
+                    'Area_px': area_px,
+                    'Area_mm2': area_px * (escala_mm_px ** 2),
+                    'Perimetro_mm': perimeter_px * escala_mm_px,
+                    'Diametro_mm': diametro_px * escala_mm_px,
+                    'Porcentaje_no_pintado': unpainted_percentage,
+                   # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
+                    'aspect_ratio': aspect_ratio,
+                    'Class_id' : class_id
+                })
+                valid_count += 1
+                colored_result[labels == lbl] = color   
+                
+                    #Funciones unicas no se mueven
+
+
+        return colored_result, batch_data, valid_count
+   
+    def get_color_by_increment(self,area, increment=150):
+                # Determine the class (range) of the area
+                class_id = area // increment  # Integer division
+                random.seed(class_id)  # Ensure consistent color for the same class
+                return (
+                    random.randint(0, 255), 
+                    random.randint(0, 255), 
+                    random.randint(0, 255)
+                ) 
+    def classify_by_size(self, area, increase=150):
+        """Clasifica las burbujas por tamaño."""
+        class_id = area // increase
+        return class_id
+
+
+
+
 
 # Clase principal de la aplicación
 class MainWindow(QMainWindow):
@@ -216,6 +250,9 @@ class MainWindow(QMainWindow):
         self.params = {}
         self.result_image = None
         self.processor = None
+        self.start_time = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_elapsed_time)
     #Values and buttons of the menu
     def initUI(self):
      # Create a menu bar
@@ -245,6 +282,7 @@ class MainWindow(QMainWindow):
         graph_action.triggered.connect(self.graphing)
         mode_menu.addAction(graph_action)
 
+       
         """1.0.0 Version base solo incorpora un modo
             Movimientos grandes se hacen en la versión 0.1.0
             Debugging es 0.0.1"""
@@ -330,6 +368,12 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.control_layout.addWidget(self.progress_bar)
 
+        self.time_label = QLabel()
+        self.time_label.setText("Tiempo restante: N/A")
+        self.time_label.setAlignment(Qt.AlignCenter)
+        self.time_label.setStyleSheet("QLabel { color : black; font: 16px; }")
+        self.control_layout.addWidget(self.time_label)
+
         # Panel derecho para mostrar imágenes
         self.image_widget = QLabel()
         self.image_widget.setFixedSize(800, 800)
@@ -346,6 +390,34 @@ class MainWindow(QMainWindow):
         # Placeholder for graphing functionality
         QMessageBox.information(self, "Graphing", "Graphing functionality is not implemented yet.")
         return
+    
+    def update_progress(self, progress, elapsed, remaining):
+        elapsed = time.time() - self.start_time
+        if progress > 0:
+            total_time = elapsed / (progress / 100)
+            remaining = total_time - elapsed
+        else:
+            remaining = 0
+
+        # Formatear tiempo
+        elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+        remaining_str = time.strftime("%H:%M:%S", time.gmtime(remaining))
+
+        # Actualizar barra de progreso
+        self.progress_bar.setValue(progress)
+        print(f"Progreso: {progress}% | Tiempo transcurrido: {elapsed_str} | Restante: {remaining_str}")
+
+        # Actualizar label según el mod o
+        if len(self.image_paths) > 1:
+            # Modo de procesamiento en lote
+            text = f"Procesando lote... {progress}%\nTiempo transcurrido: {elapsed_str}\nRestante: {remaining_str}"
+        else:
+            # Modo de procesamiento de una sola imagen
+            text = f"Procesando imagen... {progress}%\nTiempo transcurrido: {elapsed_str}\nRestante: {remaining_str}"
+
+        self.time_label.setText(text)
+        
+        QApplication.processEvents()  # Forzar actualización de la interfaz
 
     #Función para seleccionar un directorio de imágenes(Do not touch)
     def select_directory(self):
@@ -394,10 +466,12 @@ class MainWindow(QMainWindow):
     #Error about the image
     def process_image(self):
             """ Procesar una sola imagen en segundo plano """
+            self.start_time = time.time()
             if not self.current_image_path:
                 QMessageBox.warning(self, "Error", "Selecciona una imagen primero.")
                 return
-            
+            self.start_time = time.time()
+            self.timer.start(1000)
             # Detener cualquier procesamiento previo
             if self.processor and self.processor.isRunning():
                 self.processor.stop()
@@ -411,7 +485,10 @@ class MainWindow(QMainWindow):
             self.processor = ImageProcessor([self.current_image_path], self.params)
             self.processor.image_processed.connect(self.on_image_processed)
             self.processor.progress_updated.connect(self.progress_bar.setValue)
+            self.processor.batch_finished.connect(self.on_batch_finished) 
+            self.processor.progress_updated.connect(self.update_progress)
             self.processor.error_occurred.connect(self.show_error)
+            
             self.processor.start()
 
 #ERROR HERE 
@@ -419,6 +496,7 @@ class MainWindow(QMainWindow):
 
     def process_all_images(self):
         """ Procesar todas las imágenes en lote """
+        self.start_time = time.time() 
         if not self.image_paths:
             QMessageBox.warning(self, "Error", "No hay imágenes cargadas.")
             return
@@ -430,25 +508,33 @@ class MainWindow(QMainWindow):
         # Mostrar "Cargando" en el QLabel
         self.image_widget.setText("Procesando lote...")
         self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
-        QApplication.processEvents()  # Actualizar la interfaz
+        
+       
             
         # Configurar y lanzar el hilo
         self.get_parameters()
         self.processor = ImageProcessor(self.image_paths, self.params)
         self.processor.progress_updated.connect(self.progress_bar.setValue)
-        self.processor.batch_finished.connect(self.on_batch_finished)
+
+        self.processor.progress_updated.connect(self.update_progress)
         self.processor.error_occurred.connect(self.show_error)
+        self.processor.batch_finished.connect(self.on_batch_finished)
+        self.processor.image_processed.connect(self.on_image_processed)
         self.processor.start()
+        QApplication.processEvents()  # Actualizar la interfaz
 
     def on_image_processed(self, result_image, valid_count):
         """ Actualizar la GUI con los resultados de una imagen """
+        self.timer.stop()  # 🔹 Detener temporizador
+        self.update_elapsed_time() 
         self.display_result(result_image)
         QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
 
     def on_batch_finished(self, results_df):
         if not results_df.empty:
+            self.results_df = results_df
             self.download_button = QPushButton("Descargar CSV", self)
-            self.download_button.clicked.connect(lambda: self.download_csv(results_df))
+            self.download_button.clicked.connect(lambda: self.download_csv(self.results_df))
             self.control_layout.addWidget(self.download_button)
             QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
         else:
@@ -487,6 +573,43 @@ class MainWindow(QMainWindow):
             self.image_widget.setText(f"Error al mostrar la imagen: {str(e)}")
             self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
 
+    def download_csv(self, df):
+        """Guarda el DataFrame en un archivo CSV."""
+        if df.empty:
+            QMessageBox.warning(self, "Error", "No hay datos para guardar.")
+            return
+
+        # Abrir diálogo para seleccionar ubicación
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar CSV",
+            "",
+            "Archivos CSV (*.csv);;Todos los archivos (*)",
+            options=options
+        )
+
+        if file_path:
+            try:
+                # Asegurar que la extensión sea .csv
+                if not file_path.endswith('.csv'):
+                    file_path += '.csv'
+                
+                # Guardar el DataFrame
+                df.to_csv(file_path, index=False)
+                QMessageBox.information(self, "Éxito", f"Archivo guardado en:\n{file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"No se pudo guardar el archivo:\n{str(e)}")
+    def update_elapsed_time(self):
+        """Actualiza el tiempo transcurrido cada segundo en la GUI."""
+        if self.start_time is None:
+            return  # Evita errores si el tiempo de inicio aún no está definido
+        
+        elapsed = time.time() - self.start_time
+        elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
+        
+        
+
 
 if __name__ == "__main__":
 
@@ -495,4 +618,3 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
-
