@@ -41,12 +41,21 @@ class ImageProcessor(QThread):
             for idx, img_path in enumerate(self.image_paths):
                 if not self.is_running:
                     break  # Detener si se solicita
+
+                # Procesar la imagen
                 result, valid_count, _, batch_data = self.process_single_image(img_path, self.params)
                 if result is not None:
                     all_batch_data.extend(batch_data)
-                    self.image_processed.emit(result, valid_count)  # Enviar imagen procesada
-                self.progress_updated.emit(int((idx + 1) / total_images * 100))
-            self.batch_finished.emit(pd.DataFrame(all_batch_data))
+                    if total_images == 1:  # Si es solo una imagen, emitir el resultado
+                        self.image_processed.emit(result, valid_count)
+
+                # Emitir el progreso
+                progress = int((idx + 1) / total_images * 100)
+                self.progress_updated.emit(progress)
+
+            # Emitir los resultados del lote
+            if total_images > 1:
+                self.batch_finished.emit(pd.DataFrame(all_batch_data))
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
 
@@ -55,132 +64,129 @@ class ImageProcessor(QThread):
         self.is_running = False
     #The process for the images
     def process_single_image(self, image_path, params):
-        max_area_threshold = params.get('max_area_threshold', 10500)
-        min_area_threshold = params.get('min_area_threshold', 10)
-        kernel_size = params.get('kernel_size', 3)
-        morph_iterations = params.get('morph_iterations', 2)
-        min_distance_peak = params.get('min_distance_peak', 8)
+            max_area_threshold = params.get('max_area_threshold', 10500)
+            min_area_threshold = params.get('min_area_threshold', 10)
+            kernel_size = params.get('kernel_size', 3)
+            morph_iterations = params.get('morph_iterations', 2)
+            min_distance_peak = params.get('min_distance_peak', 8)
 
-        image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            return None, None, None, None
-        image_name = os.path.splitext(os.path.basename(image_path))[0]
-        height_img, width_img = image.shape[:2]
+            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return None, None, None, None
+            image_name = os.path.splitext(os.path.basename(image_path))[0]
+            height_img, width_img = image.shape[:2]
 
-        # 1. Suavizar la imagen
-        blur = cv2.GaussianBlur(image, (3, 3), 0)
+            # 1. Suavizar la imagen
+            blur = cv2.GaussianBlur(image, (3, 3), 0)
 
-        # 2. Umbral Otsu
-        _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        binary = cv2.bitwise_not(binary)
+            # 2. Umbral Otsu
+            _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            binary = cv2.bitwise_not(binary)
 
-        # 3. Limpiar por morfología
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-        binary_opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iterations)
+            # 3. Limpiar por morfología
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            binary_opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iterations)
+            # 4. Transformada de distancia
+            dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
 
-        # 4. Transformada de distancia
-        dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
+            # 5. Picos locales
+            coordinates = peak_local_max(dist_transform, min_distance=min_distance_peak, threshold_abs=0.5)
+            local_max = np.zeros(dist_transform.shape, dtype=bool)
+            local_max[tuple(coordinates.T)] = True
 
-        # 5. Picos locales
-        coordinates = peak_local_max(dist_transform, min_distance=min_distance_peak, threshold_abs=0.5)
-        local_max = np.zeros(dist_transform.shape, dtype=bool)
-        local_max[tuple(coordinates.T)] = True
+            # Etiquetar burbujas
+            markers, _ = ndimage.label(local_max)
 
-        # Etiquetar burbujas
-        markers, _ = ndimage.label(local_max)
+            # 6. Identificación de burbujas
+            labels = watershed(-dist_transform, markers, mask=binary_opened)
+            # 7. Resultado
+            num_labels = labels.max()
+            colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
+            valid_count = 0
+            batch_data = []
 
-        # 6. Identificación de burbujas
-        labels = watershed(-dist_transform, markers, mask=binary_opened)
+            scene_coordinate_system = 0.00
+            height_pixels, width_pixels = image.shape[:2]
+            escala_mm_px = 4.5 / 208  # Ajusta según corresponda
 
-        # 7. Resultado
-        num_labels = labels.max()
-        colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
-        valid_count = 0
-        batch_data = []
+            # Proceso para calcular porcentaje no pintado
+            total_pixels = binary_opened.size
+            painted_pixels = np.count_nonzero(binary_opened)
+            unpainted_pixels = total_pixels - painted_pixels
+            unpainted_percentage = (unpainted_pixels / total_pixels) * 100
+            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
 
-        scene_coordinate_system = 0.00
-        height_pixels, width_pixels = image.shape[:2]
-        escala_mm_px = 4.5 / 208  # Ajusta según corresponda
+            pre_value = 0
+            for lbl in range(1, num_labels + 1):
+                mask = (labels == lbl).astype(np.uint8)
+                area_px = cv2.countNonZero(mask)
+                x, y, w, h = cv2.boundingRect(mask)
+                aspect_ratio = w / h if h > 0 else 0
 
-        # Proceso para calcular porcentaje no pintado
-        total_pixels = binary_opened.size
-        painted_pixels = np.count_nonzero(binary_opened)
-        unpainted_pixels = total_pixels - painted_pixels
-        unpainted_percentage = (unpainted_pixels / total_pixels) * 100
-        unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+                # Filtro preliminar de burbujas válidas
+                if 0.79 <= aspect_ratio <= 2.5 and min_area_threshold <= area_px <= max_area_threshold:
+                    pre_value += 1
 
-        pre_value = 0
-        for lbl in range(1, num_labels + 1):
-            mask = (labels == lbl).astype(np.uint8)
-            area_px = cv2.countNonZero(mask)
-            x, y, w, h = cv2.boundingRect(mask)
-            aspect_ratio = w / h if h > 0 else 0
+            # Condiciones según el porcentaje no pintado ajustado
+            recalculate = False
+            if unpainted_percentage_adjusted > 25 and pre_value < 500:
+                recalculate = True
+            elif unpainted_percentage_adjusted < 6.0 or pre_value < 100:
+                print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is too low or too high. Ignoring results...")
+                return None, None, None, None
+            else:
+                print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is acceptable. Proceeding with results...")
 
-            # Filtro preliminar de burbujas válidas
-            if 0.79 <= aspect_ratio <= 2.5 and min_area_threshold <= area_px <= max_area_threshold:
-                pre_value += 1
+            # Proceso para identificar burbujas
+            for lbl in range(1, labels.max() + 1):
+                mask = (labels == lbl).astype(np.uint8)
+                area_px = cv2.countNonZero(mask)
+                bubble_coordinates = coordinates[np.where(mask[tuple(coordinates.T)] == 1)]
+                x, y, w, h = cv2.boundingRect(mask)
+                aspect_ratio = w / h if h > 0 else 0
 
-        # Condiciones según el porcentaje no pintado ajustado
-        recalculate = False
-        if unpainted_percentage_adjusted > 25 and pre_value < 500:
-            recalculate = True
-        elif unpainted_percentage_adjusted < 6.0 or pre_value < 100:
-            print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is too low or too high. Ignoring results...")
-            return None, None, None, None
-        else:
-            print(f"Unpainted percentage ({unpainted_percentage_adjusted}%) is acceptable. Proceeding with results...")
+                if 0.7 <= aspect_ratio < 2.0 and min_area_threshold <= area_px <= max_area_threshold:
+                    # Calcular perímetro y otras métricas
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if len(contours) > 0:
+                        perimeter_px = cv2.arcLength(contours[0], True)
+                    else:
+                        perimeter_px = 0.0
 
-        # Proceso para identificar burbujas
-        for lbl in range(1, labels.max() + 1):
-            mask = (labels == lbl).astype(np.uint8)
-            area_px = cv2.countNonZero(mask)
-            bubble_coordinates = coordinates[np.where(mask[tuple(coordinates.T)] == 1)]
-            x, y, w, h = cv2.boundingRect(mask)
-            aspect_ratio = w / h if h > 0 else 0
+                    diametro_px = math.sqrt((4 * area_px) / math.pi)
+                    area_mm2 = area_px * (escala_mm_px ** 2)
+                    perimetro_mm = perimeter_px * escala_mm_px
+                    diametro_mm = diametro_px * escala_mm_px
 
-            if 0.7 <= aspect_ratio < 2.0 and min_area_threshold <= area_px <= max_area_threshold:
-                # Calcular perímetro y otras métricas
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if len(contours) > 0:
-                    perimeter_px = cv2.arcLength(contours[0], True)
-                else:
-                    perimeter_px = 0.0
+                    # Asignar color basado en el área
+                    color = get_color_by_increment(area_px, increment=150)
+                    colored_result[labels == lbl] = color
 
-                diametro_px = math.sqrt((4 * area_px) / math.pi)
-                area_mm2 = area_px * (escala_mm_px ** 2)
-                perimetro_mm = perimeter_px * escala_mm_px
-                diametro_mm = diametro_px * escala_mm_px
+                    class_id = classify_by_size(area_px, increase=150)
 
-                # Asignar color basado en el área
-                color = get_color_by_increment(area_px, increment=150)
-                colored_result[labels == lbl] = color
+                    # Guardar datos
+                    id_value = str(valid_count)
+                    batch_data.append({
+                        'Imagen_idobject': image_name + '_' + id_value,
+                        'Scene_coordinate_system': scene_coordinate_system,
+                        'Area_px': area_px,
+                        'Area_mm2': area_mm2,
+                        'Perimetro_px': perimeter_px,
+                        'Perimetro_mm': perimetro_mm,
+                        'Diametro_px': diametro_px,
+                        'Diametro_mm': diametro_mm,
+                        'Escala_mm_por_px': escala_mm_px,
+                        'Porcentaje_no_pintado': unpainted_percentage_adjusted,
+                        'Coordenadas': bubble_coordinates.tolist(),
+                        'Class_id': class_id,
+                        'aspect_ratio': aspect_ratio
+                    })
+                    valid_count += 1
 
-                class_id = classify_by_size(area_px, increase=150)
-
-                # Guardar datos
-                id_value = str(valid_count)
-                batch_data.append({
-                    'Imagen_idobject': image_name + '_' + id_value,
-                    'Scene_coordinate_system': scene_coordinate_system,
-                    'Area_px': area_px,
-                    'Area_mm2': area_mm2,
-                    'Perimetro_px': perimeter_px,
-                    'Perimetro_mm': perimetro_mm,
-                    'Diametro_px': diametro_px,
-                    'Diametro_mm': diametro_mm,
-                    'Escala_mm_por_px': escala_mm_px,
-                    'Porcentaje_no_pintado': unpainted_percentage_adjusted,
-                    'Coordenadas': bubble_coordinates.tolist(),
-                    'Class_id': class_id,
-                    'aspect_ratio': aspect_ratio
-                })
-                valid_count += 1
-
-        if valid_count < 150:
-            print(f"Burbujas detectadas ({valid_count}) es menor que 150. Ignorando resultados...")
-            return None, None, None, None
-
-        return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
+            if valid_count < 150:
+                print(f"Burbujas detectadas ({valid_count}) es menor que 150. Ignorando resultados...")
+                return None, None, None, None
+            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
 
 #Funciones unicas no se mueven
 def get_color_by_increment(area, increment=150):
@@ -395,7 +401,11 @@ class MainWindow(QMainWindow):
             # Detener cualquier procesamiento previo
             if self.processor and self.processor.isRunning():
                 self.processor.stop()
-            
+             # Mostrar "Cargando" en el QLabel
+            self.image_widget.setText("Cargando...")
+            self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
+            QApplication.processEvents()  # Actualizar la interfaz
+                    
             # Configurar y lanzar el hilo
             self.get_parameters()
             self.processor = ImageProcessor([self.current_image_path], self.params)
@@ -416,7 +426,12 @@ class MainWindow(QMainWindow):
         # Detener cualquier procesamiento previo
         if self.processor and self.processor.isRunning():
             self.processor.stop()
-        
+
+        # Mostrar "Cargando" en el QLabel
+        self.image_widget.setText("Procesando lote...")
+        self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
+        QApplication.processEvents()  # Actualizar la interfaz
+            
         # Configurar y lanzar el hilo
         self.get_parameters()
         self.processor = ImageProcessor(self.image_paths, self.params)
@@ -431,10 +446,13 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
 
     def on_batch_finished(self, results_df):
-        """ Manejar los resultados del lote """
-        self.download_button = QPushButton("Descargar CSV", self)
-        self.download_button.clicked.connect(lambda: self.download_csv(results_df))
-        self.control_layout.addWidget(self.download_button)
+        if not results_df.empty:
+            self.download_button = QPushButton("Descargar CSV", self)
+            self.download_button.clicked.connect(lambda: self.download_csv(results_df))
+            self.control_layout.addWidget(self.download_button)
+            QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
+        else:
+            QMessageBox.warning(self, "Advertencia", "No se detectaron burbujas válidas en las imágenes.")
 
     #Display results image 
     def show_error(self, message):
