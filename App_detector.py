@@ -10,15 +10,17 @@ import numpy as np
 import math
 import random
 import pandas as pd
+import tempfile
 from tqdm import tqdm
+from PIL import Image
 import time 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
-    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget
+    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer  
 from PyQt5.QtGui import QPixmap, QImage, QFont
-
+import shutil
 
 # ----------------- QTHREAD PARA CADA PAGINA -------------------
 
@@ -29,9 +31,7 @@ class ImageProcessor(QThread):
     image_processed = pyqtSignal(np.ndarray, int)  # Imagen resultante y contador
     batch_finished = pyqtSignal(pd.DataFrame)      # Resultados finales del lote
     error_occurred = pyqtSignal(str)  
-    
-                 # Mensajes de error
-
+    finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
     def __init__(self, image_paths, params):
         super().__init__()
         self.image_paths = image_paths
@@ -39,7 +39,6 @@ class ImageProcessor(QThread):
         self.is_running = True  # Bandera para controlar la ejecución
         self.total_stages = 11  # Número total de etapas
         self.avg_time_per_image = 0
-
 
     def run(self):
         try:
@@ -51,16 +50,18 @@ class ImageProcessor(QThread):
             for idx, img_path in enumerate(self.image_paths):
                 if not self.is_running:
                     break
-
+                
                 # Procesar imagen y obtener resultados
                 result, _, _, batch_data = self.process_single_image(img_path, self.params)
                 valid_count = len(batch_data) if batch_data else 0
                 if batch_data is not None:
-                    if total_images > 1:# Si es solo una imagen, emitir el resultado
+                    if total_images > 1:# Si es solo mas de una imagen, emitir el resultado
                          all_batch_data.extend(batch_data)  # Acumular datos válidos
                 if result is not None:
-                    all_batch_data.extend(batch_data)
+                    if total_images > 1:  # Solo guardar en batch si hay más de una imagen
+                        all_batch_data.extend(batch_data)
                     self.image_processed.emit(result, valid_count)
+
 
                 processed_images += 1
                 avg_time_per_image = elapsed / (idx + 1) if idx > 0 else 0
@@ -165,7 +166,6 @@ class ImageProcessor(QThread):
                 labels, coordinates, params, unpainted_percentage_adjusted, image_path
             )
        
-            
             return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
 
         except Exception as e:
@@ -219,6 +219,7 @@ class ImageProcessor(QThread):
                 colored_result[labels == lbl] = color   
                 
                     #Funciones unicas no se mueven
+            
 
 
         return colored_result, batch_data, valid_count
@@ -236,24 +237,94 @@ class ImageProcessor(QThread):
         """Clasifica las burbujas por tamaño."""
         class_id = area // increase
         return class_id
-# ------------------ CLASES PARA CADA PÁGINA -------------------
-class HomePage(QWidget):
-    def __init__(self):
+
+class CleaningProcessor(QThread): 
+    progress_updated = pyqtSignal(int)  # Progreso del procesamiento
+    image_processed = pyqtSignal(str)
+    path_processed  = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)  # Señal de error
+    processing_finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
+    
+    def __init__(self, image_paths):
         super().__init__()
-        self.init_ui()
-        
-    def init_ui(self):
-        layout = QVBoxLayout()
-        label = QLabel("Página Principal - Bienvenido")
-        label.setFont(QFont('Arial', 18))
-        label.setStyleSheet("color: #2c3e50;")
-        
-        layout.addStretch()
-        layout.addWidget(label)
-        layout.addStretch()
-        
-        self.setLayout(layout)
-        self.setStyleSheet("background-color: #ecf0f1;")
+        self.image_paths = image_paths
+        self.is_running = True
+        self.avg_time_per_image = 0
+        self.temp_dir = tempfile.mkdtemp()
+       
+
+         # Inicialmente, el procesamiento no ha terminado
+      
+
+    def run(self):
+        try:
+            self.start_time = time.time()
+            total_images = len(self.image_paths)
+
+            rect1_points = [(589, 860), (1002, 858), (590, 934), (1002, 933)]
+            rect2_points = [(480, 114), (481, 2), (1, 2), (1, 114)]
+            rect3_points = [(1178, 2), (1177, 251), (1470, 252), (1470, 2)]
+            rect4_points = [(190, 724), (1, 723), (4, 934), (191, 931)]
+            rect5_points = [(1325, 861), (1468, 864), (1468, 931), (1327, 933)]
+
+            for i, img_path in enumerate(self.image_paths):
+                image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                if image is None:
+                    continue
+
+                # Si la imagen está en escala de grises, convertirla a RGB
+                if len(image.shape) == 2:
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+
+                # Dibujar los rectángulos
+                image = self.draw_rectangle_from_points(image, rect1_points)
+                image = self.draw_rectangle_from_points(image, rect2_points)
+                image = self.draw_rectangle_from_points(image, rect3_points)
+                image = self.draw_rectangle_from_points(image, rect4_points)
+                image = self.draw_rectangle_from_points(image, rect5_points)
+
+                # Guardar la imagen procesada en la carpeta temporal
+                filename = os.path.basename(img_path)
+                temp_output_path = os.path.join(self.temp_dir, filename)
+                cv2.imwrite(temp_output_path, image)
+
+                # Emitir la señal con la ruta de la imagen procesada
+                self.image_processed.emit(temp_output_path)
+
+                # Actualizar el progreso
+                progress = int((i + 1) / total_images * 100)
+                self.progress_updated.emit(progress)
+
+            # Emitir la señal con la ruta general de la carpeta temporal
+            self.path_processed.emit(self.temp_dir)
+          
+                
+
+
+
+        except Exception as e:
+            self.error_occurred.emit(f"Error: {str(e)}")
+
+    def draw_rectangle_from_points(self, image, points, color=(255, 255, 255), thickness=-1):
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+
+        top_left = (min_x, min_y)
+        bottom_right = (max_x, max_y)
+
+        cv2.rectangle(image, top_left, bottom_right, color, thickness)
+
+        return image
+
+
+      
+       
+# ------------------ CLASES PARA CADA PÁGINA -------------------
 
 class CleanPage(QWidget):
     def __init__(self):
@@ -289,7 +360,6 @@ class CleanPage(QWidget):
         self.control_layout.addWidget(self.select_dir_button)
 
 
-
         # Lista de imágenes
         self.image_list = QListWidget()
         self.image_list.itemClicked.connect(self.image_selected)
@@ -299,6 +369,11 @@ class CleanPage(QWidget):
         self.process_all_button = QPushButton("Procesar Todas las Imágenes")
         self.process_all_button.clicked.connect(self.convert_images)
         self.control_layout.addWidget(self.process_all_button)
+
+        self.save_button = QPushButton("Guardar Imagen", self)
+        
+        self.save_button.clicked.connect(self.save_image)
+        self.control_layout.addWidget(self.save_button)  # 🔹 Agregar a la UI
 
         # Barra de progreso
         self.progress_bar = QProgressBar()
@@ -314,30 +389,63 @@ class CleanPage(QWidget):
         self.splitter.addWidget(self.control_widget)
         self.splitter.addWidget(self.image_widget)
 
+       
         # 🔹 Crear el layout principal
         self.main_layout = QHBoxLayout(self)
         self.main_layout.addWidget(self.splitter)
         self.setLayout(self.main_layout)  # Asignar el layout principal a la ventana
     def select_directory(self):
+        """Permite al usuario seleccionar un directorio de imágenes."""
         dir_path = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio de Imágenes", "")
+
         if dir_path:
-            self.image_paths = [os.path.join(dir_path, f) for f in os.listdir(dir_path)
-                                if f.endswith('.jpg') or f.endswith('.png') or f.endswith('.jpeg') or f.endswith('.tif')]
+            # 🔹 Si el procesamiento ha terminado, eliminar carpeta temporal
+            if hasattr(self.processor, 'processing_finished') and self.processor.processing_finished:
+                shutil.rmtree(self.processor.temp_dir, ignore_errors=True)
+                print("✅ Directorio temporal eliminado.")
+
+            # 🔹 Limpiar lista y variables antes de actualizar
+            self.image_paths = []
             self.image_list.clear()
+            self.current_image_path = None  # Evita seleccionar una imagen anterior
+
+            # Cargar imágenes del nuevo directorio
+            self.image_paths = [
+                os.path.join(dir_path, f) for f in os.listdir(dir_path)
+                if f.lower().endswith(('.jpg', '.png', '.jpeg', '.tif'))
+            ]
+            
+            # Mostrar en la UI
             for img_path in self.image_paths:
                 self.image_list.addItem(os.path.basename(img_path))
+
+            # Mensaje informativo
             if not self.image_paths:
-                QMessageBox.warning(self, "Advertencia", "No se encontraron imágenes en el directorio seleccionado. Considere que solo se admiten archivos .jpg, .png, .jpeg y .tif.")
+                QMessageBox.warning(self, "Advertencia", "No se encontraron imágenes en el directorio seleccionado.")
             else:
                 QMessageBox.information(self, "Información", f"Se encontraron {len(self.image_paths)} imágenes.")
 
+            # 🔹 Actualizar la vista para que no muestre imágenes temporales
+            self.display_result(None)  # Borra la imagen mostrada
+
     def image_selected(self, item):
+        """Seleccionar imagen de la lista y mostrarla en la interfaz."""
         image_name = item.text()
+        
+        # Buscar en las imágenes originales
         for path in self.image_paths:
             if os.path.basename(path) == image_name:
                 self.current_image_path = path
                 break
+        
+        # 🔹 Verificar si hay una versión procesada en el directorio temporal
+        if self.processor is not None:
+            temp_image_path = os.path.join(self.processor.temp_dir, image_name)
+            if os.path.exists(temp_image_path):
+                self.current_image_path = temp_image_path  # Usa la versión procesada
+        
         self.display_image(self.current_image_path)
+
     def convert_images(self):
         """ Procesar todas las imágenes en lote """
         self.start_time = time.time() 
@@ -356,21 +464,82 @@ class CleanPage(QWidget):
        
             
         # Configurar y lanzar el hilo
-        self.processor = ImageProcessor(self.image_paths, self.params)
+        self.processor = CleaningProcessor(self.image_paths)
         self.processor.progress_updated.connect(self.progress_bar.setValue)
-
         self.processor.progress_updated.connect(self.update_progress)
         self.processor.error_occurred.connect(self.show_error)
-        self.processor.batch_finished.connect(self.on_batch_finished)
+        #self.processor.processing_finished.connect(self.on_image_processed)
         self.processor.image_processed.connect(self.on_image_processed)
+        self.processor.path_processed.connect(self.on_path_processed)  # 🔹 Conectar señal
+
+
+       
+        self.save_button = QPushButton("Guardar Imagen", self)
         self.processor.start()
         QApplication.processEvents()  # Actualizar la interfaz
         #Display results image 
+
+    def on_image_processed(self, temp_image_path):
+        """Actualizar la GUI con la imagen procesada."""
+        self.display_result(temp_image_path)
+        self.save_button.setEnabled(True)  # 🔹 Activar botón de guardado
+        QApplication.processEvents()  # Forzar actualización de la interfaz
+
+    def display_result(self, image_path):
+        """Muestra la imagen procesada en el QLabel."""
+        if image_path is None or not os.path.exists(image_path):
+            self.image_widget.setText("No se pudo procesar la imagen.")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
+            return
+
+        try:
+            image = cv2.imread(image_path)
+            if image is None:
+                raise ValueError("No se pudo cargar la imagen.")
+
+            # Convertir a formato RGB si es necesario
+            if len(image.shape) == 2:  
+                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            elif image.shape[2] == 4:  
+                image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+
+            # Redimensionar y mostrar en QLabel
+            height, width = image.shape[:2]
+            bytes_per_line = 3 * width
+            q_image = QImage(image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+
+            scaled_pixmap = QPixmap.fromImage(q_image).scaled(
+                self.image_widget.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.image_widget.setPixmap(scaled_pixmap)
+
+        except Exception as e:
+            self.image_widget.setText(f"Error al mostrar la imagen: {str(e)}")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
+
+    def on_path_processed(self, temp_dir):
+        """Actualizar la ruta procesada y habilitar el botón de guardado."""
+        print("Activando botón de guardado para:", temp_dir)
+        self.temp_dir = temp_dir
+        self.save_button.setEnabled(True)
+
+    def save_image(self):
+        """Permitir al usuario guardar las imágenes procesadas en una ubicación deseada."""
+        if not hasattr(self, 'temp_dir') or not self.temp_dir:
+            QMessageBox.warning(self, "Advertencia", "No hay imágenes procesadas para guardar.")
+            return
+
+        save_dir = QFileDialog.getExistingDirectory(self, "Guardar imágenes en", "")
+        if save_dir:
+            for filename in os.listdir(self.temp_dir):
+                temp_image_path = os.path.join(self.temp_dir, filename)
+                save_path = os.path.join(save_dir, filename)
+                shutil.move(temp_image_path, save_path)  # 🚀 Mover la imagen
+            QMessageBox.information(self, "Éxito", "Imágenes guardadas correctamente.")
     def show_error(self, message):
         """ Mostrar mensajes de error """
         QMessageBox.critical(self, "Error", message)
-    
-    def update_progress(self, progress, elapsed, remaining):
+    def update_progress(self, progress):
         elapsed = time.time() - self.start_time
         if progress > 0:
             total_time = elapsed / (progress / 100)
@@ -397,46 +566,6 @@ class CleanPage(QWidget):
         self.time_label.setText(text)
         
         QApplication.processEvents()  # Forzar actualización de la interfaz
-    def on_batch_finished(self, results_df):
-        if not results_df.empty:
-            self.results_df = results_df
-            self.download_button = QPushButton("Imagenes Limpiados", self)
-            QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
-        else:
-            QMessageBox.warning(self, "Advertencia", "No se detectaron burbujas válidas en las imágenes.")
-    def on_image_processed(self, result_image, valid_count):
-        """ Actualizar la GUI con los resultados de una imagen """
-        self.timer.stop()  # 🔹 Detener temporizador
-        self.update_elapsed_time() 
-        self.display_result(result_image)
-        QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
-    def display_result(self, result_image):
-        """Muestra la imagen procesada en el QLabel."""
-        if result_image is None:
-            self.image_widget.setText("No se pudo procesar la imagen.")
-            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
-            return
-
-        try:
-            # Convertir la imagen a RGB si es necesario
-            if len(result_image.shape) == 2:  # Si es escala de grises
-                result_image = cv2.cvtColor(result_image, cv2.COLOR_GRAY2RGB)
-            elif result_image.shape[2] == 4:  # Si tiene canal alfa (RGBA)
-                result_image = cv2.cvtColor(result_image, cv2.COLOR_RGBA2RGB)
-
-            # Redimensionar la imagen para que se ajuste al QLabel
-            height, width, channel = result_image.shape
-            bytes_per_line = 3 * width
-            q_image = QImage(result_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
-
-            # Escalar la imagen para que se ajuste al tamaño del QLabel
-            scaled_pixmap = QPixmap.fromImage(q_image).scaled(
-                self.image_widget.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.image_widget.setPixmap(scaled_pixmap)
-        except Exception as e:
-            self.image_widget.setText(f"Error al mostrar la imagen: {str(e)}")
-            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
     def update_elapsed_time(self):
         """Actualiza el tiempo transcurrido cada segundo en la GUI."""
         if self.start_time is None:
@@ -456,7 +585,7 @@ class CleanPage(QWidget):
         else:
             self.image_widget.setText("Imagen no válida o no se pudo cargar.")
             self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
-
+    
 
 class ProcessPage(QWidget):
     def __init__(self):
@@ -664,18 +793,16 @@ class ProcessPage(QWidget):
                 self.processor.stop()
              # Mostrar "Cargando" en el QLabel
             self.image_widget.setText("Cargando...")
-            self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
-            QApplication.processEvents()  # Actualizar la interfaz
-                    
+            self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")        
             # Configurar y lanzar el hilo
             self.get_parameters()
             self.processor = ImageProcessor([self.current_image_path], self.params)
             self.processor.image_processed.connect(self.on_image_processed)
             self.processor.progress_updated.connect(self.progress_bar.setValue)
             self.processor.batch_finished.connect(self.on_batch_finished) 
-            self.processor.progress_updated.connect(self.update_progress)
+            #self.processor.progress_updated.connect(self.update_progress)
             self.processor.error_occurred.connect(self.show_error)
-            
+            QApplication.processEvents()  # Actualizar la interfaz
             self.processor.start()
 
     def process_all_images(self):
@@ -704,17 +831,18 @@ class ProcessPage(QWidget):
         self.processor.error_occurred.connect(self.show_error)
         self.processor.batch_finished.connect(self.on_batch_finished)
         self.processor.image_processed.connect(self.on_image_processed)
-        self.processor.start()
         QApplication.processEvents()  # Actualizar la interfaz
+        self.processor.start()
+        
 
     def on_image_processed(self, result_image, valid_count):
         """ Actualizar la GUI con los resultados de una imagen """
-        self.timer.stop()  # 🔹 Detener temporizador
-        self.update_elapsed_time() 
         self.display_result(result_image)
-        QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
+        
+        print(self, "Éxito", f"Burbujas detectadas: {valid_count}")
 
     def on_batch_finished(self, results_df):
+        self.timer.stop()  # Detener el temporizador cuando el procesamiento finaliza
         if not results_df.empty:
             self.results_df = results_df
             self.download_button = QPushButton("Descargar CSV", self)
@@ -792,6 +920,17 @@ class ProcessPage(QWidget):
         elapsed = time.time() - self.start_time
         elapsed_str = time.strftime("%H:%M:%S", time.gmtime(elapsed))
 
+        # Mantener la información del tiempo transcurrido sin afectar el progreso
+        current_text = self.time_label.text()
+        if "Restante" in current_text:
+            remaining_part = current_text.split("\n")[-1]  # Mantiene la parte del tiempo restante
+            self.time_label.setText(f"Tiempo transcurrido: {elapsed_str}\n{remaining_part}")
+        else:
+            self.time_label.setText(f"Tiempo transcurrido: {elapsed_str}")
+
+        QApplication.processEvents()  # Forzar actualización de la interfaz
+
+
 class AnalyzePage(QWidget):
     def __init__(self):
         super().__init__()
@@ -812,6 +951,25 @@ class AnalyzePage(QWidget):
         
         self.setLayout(layout)
         self.setStyleSheet("background-color: #e8f8f5;")
+
+class HomePage(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        label = QLabel("Página Principal - Bienvenido")
+        label.setFont(QFont('Arial', 18))
+        label.setStyleSheet("color: #2c3e50;")
+        
+        layout.addStretch()
+        layout.addWidget(label)
+        layout.addStretch()
+        
+        self.setLayout(layout)
+        self.setStyleSheet("background-color: #ecf0f1;")
+
 
 # ------------------ VENTANA PRINCIPAL -------------------
 class MainApp(QMainWindow):
