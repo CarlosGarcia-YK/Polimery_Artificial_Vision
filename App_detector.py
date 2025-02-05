@@ -1,6 +1,7 @@
 import sys
 import os
 import cv2
+from matplotlib import path
 import skimage
 from skimage.feature import peak_local_max
 from skimage.segmentation import watershed
@@ -16,7 +17,7 @@ from PIL import Image
 import time 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
-    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton
+    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton, QFrame, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer  
 from PyQt5.QtGui import QPixmap, QImage, QFont
@@ -52,7 +53,10 @@ class ImageProcessor(QThread):
                     break
                 
                 # Procesar imagen y obtener resultados
-                result, _, _, batch_data = self.process_single_image(img_path, self.params)
+                if total_images > 1:
+                    result, _, _, batch_data = self.process_batch(img_path, self.params)
+                if total_images == 1:
+                    result, valid_count, _, batch_data = self.process_batch(img_path, self.params)
                 valid_count = len(batch_data) if batch_data else 0
                 if batch_data is not None:
                     if total_images > 1:# Si es solo mas de una imagen, emitir el resultado
@@ -81,8 +85,89 @@ class ImageProcessor(QThread):
         """ Detener el procesamiento """
         self.is_running = False
     #The process for the images
-        
     def process_single_image(self, image_path, params):
+        try:
+            start_time = time.time()
+            
+            # Etapa 1: Cargar imagen
+            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if image is None:
+                return None, None, None, None
+        
+            
+            clahe = cv2.createCLAHE(clipLimit=params['clip_limit'], tileGridSize=(params['grid_size'], params['grid_size']))
+            image = clahe.apply(image) if len(image.shape) == 2 else clahe.apply(image[:, :, 0])
+            self.progress_updated.emit(10, start_time, 0)  
+
+            # Etapa 2: Suavizar
+            blur = cv2.GaussianBlur(image, (params['blur_size'], params['blur_size']), 0)
+           
+           
+
+            # Etapa 3: Umbral Otsu
+            _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            binary = cv2.bitwise_not(binary)
+         
+            self.progress_updated.emit(35, start_time, 0) 
+
+            # Etapa 4: Morfología
+            kernel_size = params.get('kernel_size', 3)
+            morph_iterations = params.get('morph_iterations', 2)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+            binary_opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iterations)
+          
+           
+
+            # Etapa 5: Transformada distancia
+            dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
+          
+            
+
+            # Etapa 6: Picos locales
+            min_distance_peak = params.get('min_distance_peak', 8)
+            coordinates = peak_local_max(dist_transform, min_distance=min_distance_peak, threshold_abs=0.5)
+            local_max = np.zeros(dist_transform.shape, dtype=bool)
+            local_max[tuple(coordinates.T)] = True
+         
+            
+
+            # Etapa 7: Etiquetado
+            markers, _ = ndimage.label(local_max)
+        
+            self.progress_updated.emit(65, start_time, 0) 
+            
+
+            # Etapa 8: Watershed
+            labels = watershed(-dist_transform, markers, mask=binary_opened)
+          
+          
+
+            # Etapa 9: Cálculo porcentaje
+            total_pixels = binary_opened.size
+            painted_pixels = np.count_nonzero(binary_opened)
+            unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
+            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+            
+            self.progress_updated.emit(75, start_time, 0) 
+            
+
+            # Etapa 10: Filtro preliminar
+            valid_count = 0
+            self.progress_updated.emit(90, start_time, 0) 
+        
+
+            # Etapa 11: Procesamiento final
+            colored_result, batch_data, valid_count = self.process_bubbles(
+                labels, coordinates, params, unpainted_percentage_adjusted, image_path,1
+            )
+       
+            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
+
+        except Exception as e:
+            self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
+            return None, None, None, None
+
+    def process_batch(self, image_path, params):
         try:
             start_time = time.time()
             total_stages = 11  # Total de etapas definidas
@@ -163,7 +248,7 @@ class ImageProcessor(QThread):
 
             # Etapa 11: Procesamiento final
             colored_result, batch_data, valid_count = self.process_bubbles(
-                labels, coordinates, params, unpainted_percentage_adjusted, image_path
+                labels, coordinates, params, unpainted_percentage_adjusted, image_path,2
             )
        
             return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
@@ -181,7 +266,7 @@ class ImageProcessor(QThread):
         progress = int((current_stage / total_stages) * 100)
         self.progress_updated.emit(progress, elapsed, remaining_time)
 
-    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path):
+    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path, type):
         colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
         batch_data = []
         image_name = os.path.splitext(os.path.basename(image_path))[0]
@@ -189,38 +274,39 @@ class ImageProcessor(QThread):
         valid_count = 0  # Inicializar contador
 
 
+
         for lbl in range(1, labels.max() + 1):
-            mask = (labels == lbl).astype(np.uint8)
-            area_px = cv2.countNonZero(mask)
-            x, y, w, h = cv2.boundingRect(mask)
-            aspect_ratio = w / h if h > 0 else 0
+                mask = (labels == lbl).astype(np.uint8)
+                area_px = cv2.countNonZero(mask)
+                x, y, w, h = cv2.boundingRect(mask)
+                aspect_ratio = w / h if h > 0 else 0
 
-            if 0.7 <= aspect_ratio < 2.0 and params['min_area_threshold'] <= area_px <= params['max_area_threshold']:
-                # Cálculos de métricas
-                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                perimeter_px = cv2.arcLength(contours[0], True) if contours else 0.0
-                diametro_px = math.sqrt((4 * area_px) / math.pi)
-                class_id = self.classify_by_size(area_px, increase=150)  # Llamada corregida
-                color = self.get_color_by_increment(area_px, 150)
-                id_value = str(valid_count)
-                # Añadir a resultados
-                batch_data.append({
-                    'Imagen_idobject': f"{image_name}_{len(batch_data)}",
-                    'Area_px': area_px,
-                    'Area_mm2': area_px * (escala_mm_px ** 2),
-                    'Perimetro_mm': perimeter_px * escala_mm_px,
-                    'Diametro_mm': diametro_px * escala_mm_px,
-                    'Porcentaje_no_pintado': unpainted_percentage,
-                   # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
-                    'aspect_ratio': aspect_ratio,
-                    'Class_id' : class_id
-                })
-                valid_count += 1
-                colored_result[labels == lbl] = color   
+                if 0.7 <= aspect_ratio < 2.0 and params['min_area_threshold'] <= area_px <= params['max_area_threshold'] and type == 2:
+                    # Cálculos de métricas
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    perimeter_px = cv2.arcLength(contours[0], True) if contours else 0.0
+                    diametro_px = math.sqrt((4 * area_px) / math.pi)
+                    class_id = self.classify_by_size(area_px, increase=150)  
+                    color = self.get_color_by_increment(area_px, 150)
+                    id_value = str(valid_count)
+                    # Añadir a resultados
+                    batch_data.append({
+                        'Imagen_idobject': f"{image_name}_{len(batch_data)}",
+                        'Area_px': area_px,
+                        'Area_mm2': area_px * (escala_mm_px ** 2),
+                        'Perimetro_mm': perimeter_px * escala_mm_px,
+                        'Diametro_mm': diametro_px * escala_mm_px,
+                        'Porcentaje_no_pintado': unpainted_percentage,
+                    # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
+                        'aspect_ratio': aspect_ratio,
+                        'Class_id' : class_id
+                    })
+                    valid_count += 1
+                    colored_result[labels == lbl] = color   
+                    
+                        #Funciones unicas no se mueven
                 
-                    #Funciones unicas no se mueven
-            
-
+       
 
         return colored_result, batch_data, valid_count
    
@@ -321,10 +407,186 @@ class CleaningProcessor(QThread):
 
         return image
 
+class Tranform_files(QThread):
+    path_merged = pyqtSignal(str)
+    path_converted = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
 
-      
+
+    def __init__(self, path_origin, type_process,start_number, increment):
+            super().__init__()
+            self.path_origin = path_origin
+            self.start_number = start_number
+            self.increment = increment
+            self.type_process = type_process
+            self.temp_dir = tempfile.mkdtemp()
+            
+    def run(self):
+        try:
+            if self.type_process == 1:
+                self.merge_files(self.path_origin)
+             
+            if self.type_process == 2:
+               self.convert_files(self.path_origin,self.start_number, self.increment)
+                
+        except Exception as e:
+            self.error_occurred.emit(f"Error: {str(e)}")
+    """Combina archivos manteniendo cada uno en tablas separadas"""
+    """
+    def merge_files(self):
        
-# ------------------ CLASES PARA CADA PÁGINA -------------------
+    
+        try:
+            # Configurar opciones del diálogo
+            file_dialog = QFileDialog()
+            file_dialog.setFileMode(QFileDialog.ExistingFiles)
+            file_dialog.setNameFilter("Archivos compatibles (*.txt *.csv)")
+            
+            if file_dialog.exec_():
+                files = file_dialog.selectedFiles()
+                
+                # Validar que se seleccionaron archivos
+                if not files:
+                    QMessageBox.warning(self, "Advertencia", "No se seleccionaron archivos", QMessageBox.Ok)
+                    return
+                    
+                # Validar tipos de archivo
+                extensions = {os.path.splitext(f)[1].lower() for f in files}
+                if len(extensions) != 1 or extensions.pop() not in ['.txt', '.csv']:
+                    QMessageBox.critical(self, "Error", "Todos los archivos deben ser del mismo tipo (.txt o .csv)", QMessageBox.Ok)
+                    return
+
+                # Determinar el tipo de archivo
+                file_type = os.path.splitext(files[0])[1].lower()
+                
+                # Procesar cada archivo
+                for i, file_path in enumerate(files, start=1):
+                    try:
+                        # Leer archivo
+                        if file_type == '.csv':
+                            df = pd.read_csv(file_path)
+                        else:
+                            df = pd.read_csv(file_path, delimiter='\t')
+                            
+                        # Generar nombre único para la tabla
+                        base_name = os.path.basename(file_path)
+                        table_name = f"tabla_{i}_{os.path.splitext(base_name)[0]}"
+                        df['Nombre_archivo'] = os.path.basename(file_path)
+                        
+                        # Guardar en nueva tabla (implementación específica)
+                        self.save_to_table(df, table_name)
+                        
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Error procesando {os.path.basename(file_path)}:\n{str(e)}", QMessageBox.Ok)
+                        continue
+                        
+                # Notificar finalización
+                QMessageBox.information(self, "Éxito", f"{len(files)} archivos convertidos a tablas", QMessageBox.Ok)
+
+
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error crítico", f"Error inesperado: {str(e)}", QMessageBox.Ok)
+        finally:
+            # Limpiar recursos si es necesario
+            pass
+
+    def save_to_table(self, dataframe, table_name):
+        # Aquí iría tu lógica específica de guardado
+        print(f"Guardando {table_name} con {len(dataframe)} registros")
+        
+        # Ejemplo: Guardar como nuevo CSV
+        output_path = f"{table_name}.csv"
+        dataframe.to_csv(output_path, index=False)
+        
+        # O guardar en base de datos, etc.
+    """
+
+
+    def convert_files(self, csv_filename,start_number, increment):
+        try:
+            print("🟡 Iniciando conversión de archivos...")
+            df = pd.read_csv(csv_filename)
+            print("✅ Archivo CSV leído correctamente.")
+
+            # Paso 1: Validar y procesar columnas clave
+            if 'Imagen_idobject' not in df.columns:
+                raise ValueError("❌ Error: La columna 'Imagen_idobject' no existe.")
+
+            # Extraer 'Coordenate_type' (primeros 2 caracteres)
+            df['Coordenate_type'] = df['Imagen_idobject'].str[0:2]
+            
+            # Extraer 'Imagen_idobject_substr' (caracteres 2-5, sin guiones)
+            df['Imagen_idobject_substr'] = (
+                df['Imagen_idobject']
+                .str[2:5]
+                .str.replace('_', '', regex=True)
+                .pipe(pd.to_numeric, errors='coerce')
+            )
+            
+            # Eliminar filas inválidas
+            df = df.dropna(subset=['Imagen_idobject_substr'])
+            df['Imagen_idobject_substr'] = df['Imagen_idobject_substr'].astype(int)
+            min_value = df['Imagen_idobject_substr'].min()
+            df['Imagen_idobject_substr'] = df['Imagen_idobject_substr'] - min_value
+
+            # Paso 2: Agrupar y fusionar incluyendo SIEMPRE 'Coordenate_type'
+            # Crear tabla base con conteos
+            count_table = (
+                df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                .size()
+                .reset_index(name='Count')
+            )
+
+            # Fusionar promedio de 'Porcentaje_no_pintado'
+            avg_porcentaje = (
+                df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                ['Porcentaje_no_pintado'].mean()
+                .reset_index()
+            )
+            count_table = pd.merge(count_table, avg_porcentaje, on=['Coordenate_type', 'Imagen_idobject_substr'])
+
+            # Fusionar promedio de 'Diametro_mm'
+            avg_diametro = (
+                df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                ['Diametro_mm'].mean()
+                .reset_index()
+            )
+            count_table = pd.merge(count_table, avg_diametro, on=['Coordenate_type', 'Imagen_idobject_substr'])
+
+            # Fusionar moda de 'Class_id'
+            mode_class = (
+                df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                ['Class_id'].agg(lambda x: x.mode()[0])
+                .reset_index()
+            )
+            count_table = pd.merge(count_table, mode_class, on=['Coordenate_type', 'Imagen_idobject_substr'])
+
+            # Paso 3: Calcular 'Scene_coordinate_system' (sin bucles)
+            count_table['Scene_coordinate_system'] = (
+                #-21.00000 + 0.5 * (count_table['Imagen_idobject_substr'] - 78)
+                start_number + increment * (count_table['Imagen_idobject_substr'])
+            )
+
+            # Paso 4: Ordenar y guardar
+            count_table = count_table.sort_values(by=['Coordenate_type', 'Imagen_idobject_substr'])
+            count_table = count_table.rename(columns={
+                'Porcentaje_no_pintado': 'Avg_Porcentaje_no_pintado',
+                'Diametro_mm': 'Avg_Diametro_mm',
+                'Class_id': 'Mode_Class_id'
+            })
+
+            output_filename = os.path.join(self.temp_dir, f"converted_{os.path.basename(csv_filename)}")
+            count_table.to_csv(output_filename, index=False)
+            print(f"✅ Archivo convertido guardado en: {output_filename}")
+
+            self.path_converted.emit(output_filename)
+            return output_filename
+
+        except Exception as e:
+            print(f"❌ Error crítico: {str(e)}")
+            raise
+
 
 class CleanPage(QWidget):
     def __init__(self):
@@ -720,10 +982,10 @@ class ProcessPage(QWidget):
         self.progress_bar.setValue(progress)
         print(f"Progreso: {progress}% | Tiempo transcurrido: {elapsed_str} | Restante: {remaining_str}")
 
-        # Actualizar label según el mod o
+        # Actualizar label según el modo
         if len(self.image_paths) > 1:
             # Modo de procesamiento en lote
-            text = f"Procesando lote... {progress}%\nTiempo transcurrido: {elapsed_str}\nRestante: {remaining_str}"
+            text = f"Procesando lote... {progress}%\nTiempo transcurrido: {elapsed_str}\nRestantes: {remaining_str}"
         else:
             # Modo de procesamiento de una sola imagen
             text = f"Procesando imagen... {progress}%\nTiempo transcurrido: {elapsed_str}\nRestante: {remaining_str}"
@@ -935,22 +1197,236 @@ class AnalyzePage(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
+        self.file_paths = {} 
         
     def init_ui(self):
-        layout = QVBoxLayout()
-        label = QLabel("Módulo de Análisis")
-        label.setFont(QFont('Arial', 16))
-        
-        self.btn_analyze = QPushButton("Iniciar Análisis")
-        self.results_area = QLabel("Resultados aparecerán aquí")
-        self.results_area.setStyleSheet("border: 1px solid #ddd; padding: 15px;")
-        
-        layout.addWidget(label)
-        layout.addWidget(self.btn_analyze)
-        layout.addWidget(self.results_area)
-        
-        self.setLayout(layout)
         self.setStyleSheet("background-color: #e8f8f5;")
+
+        # 🔹 Gráfico (simulación con QLabel)
+        graph_frame = QFrame(self)
+        graph_frame.setStyleSheet("background-color: #fff; border: 1px solid #ccc;")
+        graph_frame.setMinimumHeight(200)
+
+        graph_layout = QVBoxLayout(graph_frame)
+        graph_label = QLabel("Gráfica de burbujas", graph_frame)
+        graph_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        graph_label.setStyleSheet("font-size: 20px; color: #333; font-weight: bold;")
+        graph_layout.addWidget(graph_label)
+
+        
+
+       # 🔹 Controles Inferiores
+        control_layout = QHBoxLayout()  # Cambiamos a QHBoxLayout para dividir en dos columnas
+       
+
+        # ========== 📂 Panel Izquierdo ==========
+        left_panel = QVBoxLayout()  # Panel Izquierdo
+
+
+         # Botones en una fila
+
+        # Caja para mostrar archivos cargados
+        self.file_list = QListWidget()
+        self.file_list.setFixedHeight(80)  # Ajuste de altura
+        self.file_list.setFixedWidth(600)
+        left_panel.addWidget(self.file_list)
+
+
+        file_controls = QHBoxLayout()
+        file_controls.addWidget(self.create_button("Deleted", self.delete_file))
+        file_controls.addWidget(self.create_button("Add", self.add_file))
+        left_panel.addLayout(file_controls)
+
+    
+        # Create a horizontal layout for the first scene coordinate value
+        scene_coord_layout = QHBoxLayout()
+        scene_coord_layout.addWidget(QLabel("First Scene_coordinate value"))
+        self.scene_coordinate_value = QDoubleSpinBox()
+        self.scene_coordinate_value.setFixedWidth(100)
+        self.scene_coordinate_value.setRange(-90, 90)
+        self.scene_coordinate_value.setValue(-30)
+        self.scene_coordinate_value.setDecimals(4)
+        scene_coord_layout.addWidget(self.scene_coordinate_value)
+        left_panel.addLayout(scene_coord_layout)
+
+        # Create a horizontal layout for the limit scene coordinate value
+        limit_coord_layout = QHBoxLayout()
+        limit_coord_layout.addWidget(QLabel("Limit Scene_coordinate value"))
+        self.limit_scene_coordinate = QDoubleSpinBox()
+        self.limit_scene_coordinate.setFixedWidth(100)
+        self.limit_scene_coordinate.setRange(-90, 90)
+        self.limit_scene_coordinate.setDecimals(4)
+        self.limit_scene_coordinate.setValue(0.5000)
+        limit_coord_layout.addWidget(self.limit_scene_coordinate)
+        left_panel.addLayout(limit_coord_layout)
+       
+
+        converter_layout = QHBoxLayout()  # Layout para el panel de conversión
+        converter_layout.addWidget(self.create_button("Merges", self.merge_files))
+        converter_layout.addWidget(self.create_button("Convert File", self.converter))
+        left_panel.addLayout(converter_layout)
+
+        left_panel.addWidget(self.create_button("EXPORT CSV", self.export_csv))
+
+        
+
+        control_layout.addLayout(left_panel)  # Agregamos el panel izquierdo
+
+
+        # ========== 📊 Panel Derecho ==========
+        right_panel = QVBoxLayout()  # Panel Derecho
+
+        # Botones de variables en una fila
+        var_layout = QHBoxLayout()
+        var_layout.addWidget(self.create_button("V1", self.select_variables))
+        var_layout.addWidget(self.create_button("V2", self.select_variables))
+        var_layout.addWidget(self.create_button("V3", self.select_variables))
+        right_panel.addLayout(var_layout)
+
+        # Botones en columna
+        right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
+        right_panel.addWidget(self.create_button("Analyze", self.generate_graph))  # Cambiado el nombre
+        
+
+        control_layout.addLayout(right_panel)  # Agregamos el panel derecho
+
+        
+        # 🔹 Layout Principal
+        main_layout = QVBoxLayout(self)
+        main_layout.addWidget(graph_frame)
+        main_layout.addLayout(control_layout)
+        self.setLayout(main_layout)
+
+    def create_button(self, text, callback):
+        btn = QPushButton(text)
+        btn.setStyleSheet("background-color: #005f80; color: white; padding: 5px; font-weight: bold;")
+        btn.clicked.connect(callback)
+        return btn
+
+    def converter(self):
+        print("Convertir archivo")
+        reply = QMessageBox.question(
+            self, 'Confirmar conversión', 'Prodecera a convertir el archivo seleccionado. ¿Está seguro?',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            print("Conversión confirmada")
+           #Convert only if the following headers in the CSV file are present
+            selected_item = self.file_list.currentItem()
+
+            if not selected_item:
+                QMessageBox.warning(self, "Advertencia", "No hay archivo seleccionado.")
+                return
+            
+            
+
+            file_name = selected_item.text()  # Nombre del archivo
+            file_path = self.file_paths.get(file_name)  # Obtener la ruta completa
+            
+            if not file_path:
+                QMessageBox.warning(self, "Error", f"No se encontró la ruta completa para: {file_name}")
+                return
+
+            # Verificar si el archivo realmente existe antes de leerlo
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "Error", f"El archivo no existe: {file_path}")
+                return
+
+                # Verificar si tiene las columnas necesarias
+            try:
+                df = pd.read_csv(file_path, nrows=0)  # Leer solo los encabezados
+                required_headers = {'Imagen_idobject', 'Porcentaje_no_pintado', 'Diametro_mm'}
+                
+                if required_headers.issubset(df.columns):
+                    self.tranform = Tranform_files(file_path, 2,self.scene_coordinate_value.value(), self.limit_scene_coordinate.value())
+                    self.tranform.path_converted.connect(self.show_converted)  # Conectar la señal
+                    self.tranform.start()
+                    QApplication.processEvents()  # Actualizar la interfaz
+                    print("✅ Archivo convertido correctamente")
+
+                else:
+                    QMessageBox.warning(self, "Advertencia", "El archivo debe contener al menos 'Imagen_idobject', 'Diametro_mm' y 'Porcentaje_no_pintado'.")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
+                
+
+
+        else:
+            print("Conversión cancelada")
+
+        # Placeholder for file conversion functionality
+    def show_converted(self, converted_path):
+        file_name = os.path.basename(converted_path)
+        self.file_list.addItem(file_name)  # Agregar el archivo a la lista
+        self.file_paths[file_name] = converted_path  # Guardar la ruta real
+
+
+    def delete_file(self):
+        print("Eliminar archivo")
+        selected_item = self.file_list.currentItem()
+        if selected_item:
+            self.file_list.takeItem(self.file_list.row(selected_item))
+
+    def add_file(self):
+        print("Agregar archivo")
+
+        #Add a file, selecting an existing file
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select a file", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if file_path:
+            file_name = os.path.basename(file_path)
+            if file_name.endswith(".csv"):
+                self.file_list.addItem(file_name)
+                self.file_paths[file_name] = file_path
+            else :
+                print("only CSV files are allowed")
+            
+        else:
+            print("No file selected")
+        
+       
+
+
+    def merge_files(self):
+        print("Combinar archivos")
+
+    def select_variables(self):
+        print("Seleccionar variables")
+
+    def choose_data(self):
+        print("Elegir datos")
+
+    def generate_graph(self):
+        print("Generar gráfica")
+
+    def export_csv(self):
+        selected_item =self.file_list.currentItem()
+        if not selected_item:
+            QMessageBox.warning(self, "Advertencia", "No hay archivo seleccionado.")
+            return
+        file_name = selected_item.text()
+        file_path = self.file_paths.get(file_name)
+        if not file_path:
+            QMessageBox.warning(self, "Error", f"No se encontró la ruta completa para: {file_name}")
+            return
+        if not os.path.exists(file_path):
+            QMessageBox.warning(self, "Error", f"El archivo no existe: {file_path}")
+            return
+        try:
+            df = pd.read_csv(file_path)
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Guardar CSV", "", "CSV Files (*.csv);;All Files (*)"
+            )
+            if save_path:
+                df.to_csv(save_path, index=False)
+                QMessageBox.information(self, "Éxito", f"Archivo guardado en:\n{save_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
+
+
+
 
 class HomePage(QWidget):
     def __init__(self):
