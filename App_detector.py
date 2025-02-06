@@ -411,6 +411,8 @@ class Tranform_files(QThread):
     path_merged = pyqtSignal(str)
     path_converted = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    error_signal = pyqtSignal(str, str)
+    success_signal = pyqtSignal(str, int, int)
 
 
     def __init__(self, path_origin, type_process,start_number, increment):
@@ -421,10 +423,21 @@ class Tranform_files(QThread):
             self.type_process = type_process
             self.temp_dir = tempfile.mkdtemp()
             
+            if self.type_process == 1:
+                if isinstance(self.path_origin, list):
+                    self.files = path_origin
+                else:
+                    # Si se pasa un solo archivo, lo ponemos en una lista
+                    self.files = [path_origin]
+            else:
+                # Para otros procesos, podrías guardar path_origin de forma diferente.
+                self.files = None  # o asignarlo según tu lógica
+                
     def run(self):
         try:
             if self.type_process == 1:
-                self.merge_files(self.path_origin)
+                print(">> Ejecutando merge_files...")
+                self.merge_files()
              
             if self.type_process == 2:
                self.convert_files(self.path_origin,self.start_number, self.increment)
@@ -432,75 +445,93 @@ class Tranform_files(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
     """Combina archivos manteniendo cada uno en tablas separadas"""
-    """
-    def merge_files(self):
-       
     
+    def merge_files(self):
         try:
-            # Configurar opciones del diálogo
-            file_dialog = QFileDialog()
-            file_dialog.setFileMode(QFileDialog.ExistingFiles)
-            file_dialog.setNameFilter("Archivos compatibles (*.txt *.csv)")
-            
-            if file_dialog.exec_():
-                files = file_dialog.selectedFiles()
-                
-                # Validar que se seleccionaron archivos
-                if not files:
-                    QMessageBox.warning(self, "Advertencia", "No se seleccionaron archivos", QMessageBox.Ok)
-                    return
-                    
-                # Validar tipos de archivo
-                extensions = {os.path.splitext(f)[1].lower() for f in files}
-                if len(extensions) != 1 or extensions.pop() not in ['.txt', '.csv']:
-                    QMessageBox.critical(self, "Error", "Todos los archivos deben ser del mismo tipo (.txt o .csv)", QMessageBox.Ok)
-                    return
+            print("Working...")
+            if not self.files:
+                self.error_signal.emit("Error", "No se seleccionaron archivos")
+                return
 
-                # Determinar el tipo de archivo
-                file_type = os.path.splitext(files[0])[1].lower()
-                
-                # Procesar cada archivo
-                for i, file_path in enumerate(files, start=1):
-                    try:
-                        # Leer archivo
-                        if file_type == '.csv':
-                            df = pd.read_csv(file_path)
-                        else:
-                            df = pd.read_csv(file_path, delimiter='\t')
-                            
-                        # Generar nombre único para la tabla
-                        base_name = os.path.basename(file_path)
-                        table_name = f"tabla_{i}_{os.path.splitext(base_name)[0]}"
-                        df['Nombre_archivo'] = os.path.basename(file_path)
-                        
-                        # Guardar en nueva tabla (implementación específica)
-                        self.save_to_table(df, table_name)
-                        
-                    except Exception as e:
-                        QMessageBox.critical(self, "Error", f"Error procesando {os.path.basename(file_path)}:\n{str(e)}", QMessageBox.Ok)
-                        continue
-                        
-                # Notificar finalización
-                QMessageBox.information(self, "Éxito", f"{len(files)} archivos convertidos a tablas", QMessageBox.Ok)
+            if not self.validate_file_types(self.files):
+                self.error_signal.emit("Error", "Todos los archivos deben ser del mismo tipo")
+                return
 
-
-                
+            print("Working")
+            merged_df, total_files, total_records = self.process_files()
+            output_path = self.save_file(merged_df)
+            if output_path:
+                self.success_signal.emit(output_path, total_files, total_records)
         except Exception as e:
-            QMessageBox.critical(self, "Error crítico", f"Error inesperado: {str(e)}", QMessageBox.Ok)
-        finally:
-            # Limpiar recursos si es necesario
-            pass
+            self.error_signal.emit("Error crítico", f"Error durante el merge: {str(e)}")
 
-    def save_to_table(self, dataframe, table_name):
-        # Aquí iría tu lógica específica de guardado
-        print(f"Guardando {table_name} con {len(dataframe)} registros")
+    def process_files(self):
+        # Tu lógica original de lectura y validación de archivos
+        dfs = []
+        reference_columns = None
+        file_type = os.path.splitext(self.files[0])[1].lower()
+
+        for index, file_path in enumerate(self.files):
+            print("Transforming....", file_path)
+            try:
+                # Leer el archivo según su tipo
+                if file_type == '.csv':
+                    df = pd.read_csv(file_path)
+                else:
+                    df = pd.read_csv(file_path, delimiter='\t')
+
+                # Agregar una columna que indique el archivo de origen para cada fila
+                df['source_file'] = os.path.basename(file_path)
+
+                # Validar que todas las columnas sean iguales en cada archivo
+                if reference_columns is None:
+                    reference_columns = list(df.columns)
+                else:
+                    if list(df.columns) != reference_columns:
+                        self.error_signal.emit(
+                            "Error de columnas",
+                            f"Archivo {os.path.basename(file_path)} tiene columnas diferentes"
+                        )
+                        return None, 0, 0
+
+                dfs.append(df)
+            except Exception as e:
+                self.error_signal.emit(
+                    "Error de lectura",
+                    f"Error leyendo {os.path.basename(file_path)}:\n{str(e)}"
+                )
+                return None, 0, 0
+
+        concatenated = pd.concat(dfs, ignore_index=True)
+        return concatenated, len(dfs), len(concatenated)
+
+
+    def save_file(self, merged_df):
+        # Guardar el archivo combinado
+            file_type = os.path.splitext(self.files[0])[1].lower()
+            output_filename = f"merged_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}{file_type}"
+            
+            output_path = os.path.join(
+                os.path.dirname(self.files[0]),  # Directorio del primer archivo
+                output_filename
+            )
         
-        # Ejemplo: Guardar como nuevo CSV
-        output_path = f"{table_name}.csv"
-        dataframe.to_csv(output_path, index=False)
-        
-        # O guardar en base de datos, etc.
-    """
+            try:
+                if file_type == '.csv':
+                    merged_df.to_csv(output_path, index=False)
+                else:
+                    merged_df.to_csv(output_path, sep='\t', index=False)
+                return output_path
+            except Exception as e:
+                self.error_signal.emit("Error al guardar", str(e))
+                return None
+
+    def validate_file_types(self, file_paths):
+        # Tu método de validación original
+        extensions = [os.path.splitext(f)[1].lower() for f in file_paths]
+        return all(ext in ['.csv', '.txt'] for ext in extensions) and len(set(extensions)) == 1
+
+
 
 
     def convert_files(self, csv_filename,start_number, increment):
@@ -1278,10 +1309,7 @@ class AnalyzePage(QWidget):
 
         # Botones de variables en una fila
         var_layout = QHBoxLayout()
-        var_layout.addWidget(self.create_button("V1", self.select_variables))
-        var_layout.addWidget(self.create_button("V2", self.select_variables))
-        var_layout.addWidget(self.create_button("V3", self.select_variables))
-        right_panel.addLayout(var_layout)
+       
 
         # Botones en columna
         right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
@@ -1371,29 +1399,64 @@ class AnalyzePage(QWidget):
     def add_file(self):
         print("Agregar archivo")
 
-        #Add a file, selecting an existing file
+        # Add a file, selecting an existing file
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select a file", "", "CSV Files (*.csv);;All Files (*)"
         )
         if file_path:
             file_name = os.path.basename(file_path)
             if file_name.endswith(".csv"):
+                # Save the file in the same temporary directory
+                if not hasattr(self, 'temp_dir'):
+                    self.temp_dir = tempfile.mkdtemp()
+                temp_file_path = os.path.join(self.temp_dir, file_name)
+                shutil.copy(file_path, temp_file_path)
+                
                 self.file_list.addItem(file_name)
-                self.file_paths[file_name] = file_path
-            else :
-                print("only CSV files are allowed")
-            
+                self.file_paths[file_name] = temp_file_path
+            else:
+                print("Only CSV files are allowed")
         else:
             print("No file selected")
-        
        
 
 
     def merge_files(self):
-        print("Combinar archivos")
+        # Se asume que se usa un diálogo para seleccionar múltiples archivos
+        files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Seleccionar archivos a combinar",
+            "",  # O un directorio predeterminado
+            "Archivos compatibles (*.txt *.csv);;Todos los archivos (*)"
+        )
+        
+        if files:
+            self.start_merge_process(files)
+            print("Starting....")
+        else:
+            QMessageBox.warning(self, "Advertencia", "No se seleccionaron archivos para fusionar.")
 
-    def select_variables(self):
-        print("Seleccionar variables")
+    def start_merge_process(self, files):
+        # Crear y configurar el hilo para merge, con type_process = 1
+        self.merge_thread = Tranform_files(files, 1, 1, 1)  # start_number e increment según tus requerimientos
+        self.merge_thread.error_signal.connect(self.show_error)
+        self.merge_thread.success_signal.connect(self.show_success)
+        self.merge_thread.start()
+
+
+    def show_error(self, title, message):
+        QMessageBox.critical(self, title, message, QMessageBox.Ok)
+
+    def show_success(self, output_path, total_files, total_records):
+        msg = f"""
+        Archivos combinados exitosamente:
+        - Total archivos: {total_files}
+        - Total registros: {total_records}
+        - Guardado en: {output_path}
+        """
+        QMessageBox.information(self, "Merge completado", msg, QMessageBox.Ok)
+
+
 
     def choose_data(self):
         print("Elegir datos")
