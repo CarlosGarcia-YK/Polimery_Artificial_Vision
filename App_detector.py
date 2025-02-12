@@ -19,12 +19,149 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
     QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton, QFrame, QDoubleSpinBox
 )
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer  
-from PyQt5.QtGui import QPixmap, QImage, QFont
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect
+from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush
 import shutil
 
-# ----------------- QTHREAD PARA CADA PAGINA -------------------
 
+
+class LassoLabel(QLabel):
+    # This signal will emit the polygon as a list of QPoint in image coordinates.
+    selectionFinished = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.selection_enabled = False  # Flag to enable/disable selection mode.
+        self.drawing = False            # True while drawing the lasso.
+        self.points = []                # List of points (in widget coordinates) for the current polygon.
+        self.polygons = []              # List of finished polygons (each is a list of QPoint in widget coordinates).
+        self._pixmapRect = None         # The rectangle (inside the label) where the image is drawn.
+        self._scale_factor = 1.0        # Scale factor used to display the image.
+
+    def enableSelection(self):
+        """Enable lasso selection mode."""
+        self.selection_enabled = True
+
+    def disableSelection(self):
+        """Disable lasso selection mode."""
+        self.selection_enabled = False
+
+    def clearPolygons(self):
+        """Clear all drawn polygons."""
+        self.polygons = []
+        self.points = []
+        self.update()
+
+    def setPixmap(self, pixmap):
+        """Override setPixmap so we can compute the drawing rectangle for the image."""
+        super().setPixmap(pixmap)
+        self._computePixmapRect()
+        self.update()
+
+    def resizeEvent(self, event):
+        """When the widget is resized, recalc the pixmap rectangle."""
+        super().resizeEvent(event)
+        self._computePixmapRect()
+
+    def _computePixmapRect(self):
+        """
+        Compute the rectangle in which the pixmap is drawn (centered and scaled).
+        This rectangle is used to both display the image and limit the drawing area.
+        """
+        if self.pixmap() is None:
+            self._pixmapRect = None
+            return
+
+        pixmap_size = self.pixmap().size()
+        label_size = self.size()
+        # Compute scale factor to fit the image inside the label.
+        scale = min(label_size.width() / pixmap_size.width(),
+                    label_size.height() / pixmap_size.height())
+        new_width = pixmap_size.width() * scale
+        new_height = pixmap_size.height() * scale
+        x = (label_size.width() - new_width) / 2
+        y = (label_size.height() - new_height) / 2
+        self._pixmapRect = QRect(int(x), int(y), int(new_width), int(new_height))
+        self._scale_factor = scale
+
+
+
+    def mousePressEvent(self, event):
+        if not self.selection_enabled or self.pixmap() is None:
+            super().mousePressEvent(event)
+            return
+
+        if event.button() == Qt.LeftButton and self._pixmapRect and self._pixmapRect.contains(event.pos()):
+            self.drawing = True
+            self.points = [event.pos()]
+            self.update()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.drawing and self.selection_enabled:
+            pos = event.pos()
+            # Clamp the position to the pixmap rectangle if needed.
+            if self._pixmapRect:
+                x = max(self._pixmapRect.left(), min(pos.x(), self._pixmapRect.right()))
+                y = max(self._pixmapRect.top(), min(pos.y(), self._pixmapRect.bottom()))
+                pos = QPoint(x, y)
+            self.points.append(pos)
+            self.update()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.drawing and self.selection_enabled and event.button() == Qt.LeftButton:
+            self.drawing = False
+            # Optionally close the polygon (i.e. add the first point again if needed)
+            if self.points and (self.points[0] != self.points[-1]):
+                self.points.append(self.points[0])
+            # Save the finished polygon (in widget coordinates) for display.
+            self.polygons.append(self.points.copy())
+
+            image_polygon = []
+            if self._pixmapRect:
+                for point in self.points:
+                    image_x = (point.x() - self._pixmapRect.x()) / self._scale_factor
+                    image_y = (point.y() - self._pixmapRect.y()) / self._scale_factor
+                    image_polygon.append((image_x, image_y))  # O convertir a int según se requiera
+            self.selectionFinished.emit(image_polygon)
+            self.points = []
+
+            self.update()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        """
+        Paint the label normally (which will show the pixmap) and then draw
+        any finished polygons as well as the current drawing polygon.
+        """
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Draw finished polygons (with fill).
+        for poly in self.polygons:
+            qpoly = QPolygon(poly)
+            painter.setPen(QPen(Qt.red, 2))
+            painter.setBrush(QBrush(QColor(255, 0, 0, 100)))  # Semi-transparent red fill.
+            painter.drawPolygon(qpoly)
+
+        # Draw the current polygon being drawn.
+        if self.drawing and self.points:
+            qpoly = QPolygon(self.points)
+            painter.setPen(QPen(Qt.blue, 2, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPolyline(qpoly)
+        
+   
+
+
+
+# ----------------- QTHREAD PARA CADA PAGINA -------------------
 
 class ImageProcessor(QThread):
     # Señales para comunicación con la GUI
@@ -331,10 +468,11 @@ class CleaningProcessor(QThread):
     error_occurred = pyqtSignal(str)  # Señal de error
     processing_finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
     
-    def __init__(self, image_paths):
+    def __init__(self, image_paths, custom_coords):
         super().__init__()
         self.image_paths = image_paths
         self.is_running = True
+        self.custom_coords = custom_coords
         self.avg_time_per_image = 0
         self.temp_dir = tempfile.mkdtemp()
        
@@ -347,12 +485,13 @@ class CleaningProcessor(QThread):
             self.start_time = time.time()
             total_images = len(self.image_paths)
 
-            rect1_points = [(589, 860), (1002, 858), (590, 934), (1002, 933)]
-            rect2_points = [(480, 114), (481, 2), (1, 2), (1, 114)]
-            rect3_points = [(1178, 2), (1177, 251), (1470, 252), (1470, 2)]
-            rect4_points = [(190, 724), (1, 723), (4, 934), (191, 931)]
-            rect5_points = [(1325, 861), (1468, 864), (1468, 931), (1327, 933)]
-
+            default_rects = [
+                [(589, 860), (1002, 858), (590, 934), (1002, 933)],
+                [(480, 114), (481, 2), (1, 2), (1, 114)],
+                [(1178, 2), (1177, 251), (1470, 252), (1470, 2)],
+                [(190, 724), (1, 723), (4, 934), (191, 931)],
+                [(1325, 861), (1468, 864), (1468, 931), (1327, 933)]
+            ]
             for i, img_path in enumerate(self.image_paths):
                 image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
                 if image is None:
@@ -362,12 +501,15 @@ class CleaningProcessor(QThread):
                 if len(image.shape) == 2:
                     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-                # Dibujar los rectángulos
-                image = self.draw_rectangle_from_points(image, rect1_points)
-                image = self.draw_rectangle_from_points(image, rect2_points)
-                image = self.draw_rectangle_from_points(image, rect3_points)
-                image = self.draw_rectangle_from_points(image, rect4_points)
-                image = self.draw_rectangle_from_points(image, rect5_points)
+                if self.custom_coords is not None and img_path in self.custom_coords:
+                    print("Entro")
+                    pts = np.array(self.custom_coords[img_path], np.int32)
+                    pts = pts.reshape((-1, 1, 2))
+                    cv2.fillPoly(image, [pts], (255, 255, 255))
+                else:
+                    # Dibujar los rectángulos
+                    for rect_points in default_rects:
+                        image = self.draw_rectangle_from_points(image, rect_points)
 
                 # Guardar la imagen procesada en la carpeta temporal
                 filename = os.path.basename(img_path)
@@ -383,10 +525,6 @@ class CleaningProcessor(QThread):
 
             # Emitir la señal con la ruta general de la carpeta temporal
             self.path_processed.emit(self.temp_dir)
-          
-                
-
-
 
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
@@ -406,6 +544,7 @@ class CleaningProcessor(QThread):
         cv2.rectangle(image, top_left, bottom_right, color, thickness)
 
         return image
+
 
 class Tranform_files(QThread):
     path_merged = pyqtSignal(str)
@@ -618,10 +757,11 @@ class Tranform_files(QThread):
             print(f"❌ Error crítico: {str(e)}")
             raise
 
-
+#-------------------QWIDGET DE CADA PAGINA------------------------
 class CleanPage(QWidget):
     def __init__(self):
         super().__init__()
+        self.custom_selections = {}  # Aquí se almacenarán las selecciones (por imagen)
         self.init_ui()
         
     def init_ui(self):
@@ -658,8 +798,13 @@ class CleanPage(QWidget):
         self.image_list.itemClicked.connect(self.image_selected)
         self.control_layout.addWidget(self.image_list)
 
+          # Botón para limpiar los lazos creados en la imagen actual
+        self.clear_sel_button = QPushButton("Eliminar Lazos de la Imagen Actual")
+        self.clear_sel_button.clicked.connect(self.clear_selection)
+        self.control_layout.addWidget(self.clear_sel_button)
+
         # Botón para procesar todas las imágenes
-        self.process_all_button = QPushButton("Procesar Todas las Imágenes")
+        self.process_all_button = QPushButton("Procesamiento Personalizado")
         self.process_all_button.clicked.connect(self.convert_images)
         self.control_layout.addWidget(self.process_all_button)
 
@@ -678,6 +823,26 @@ class CleanPage(QWidget):
         self.time_label.setStyleSheet("QLabel { color : black; font: 16px; }")
         self.control_layout.addWidget(self.time_label)
 
+
+           # Panel de imagen usando LassoLabel para selección interactiva
+        self.image_widget = LassoLabel()
+        self.image_widget.setFixedSize(800, 800)
+        self.image_widget.setAlignment(Qt.AlignCenter)
+        self.image_widget.setText("Carga una imagen y presiona 'Iniciar Selección' para dibujar.\n"
+                                "Usa clic izquierdo para dibujar; al soltar se cierra y se llena el lazo.")
+        # Connect the signal so that when a polygon is finished its coordinates are saved.
+        self.image_widget.selectionFinished.connect(self.save_custom_selection)
+
+        self.start_selection_button = QPushButton("Iniciar Selección")
+        self.start_selection_button.clicked.connect(self.start_selection)
+        self.control_layout.addWidget(self.start_selection_button)
+
+        self.erased_the_last = QPushButton("Eliminate Selection")
+        self.erased_the_last.clicked.connect(self.erased_selection)
+        self.control_layout.addWidget(self.erased_the_last)
+
+
+
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.addWidget(self.control_widget)
         self.splitter.addWidget(self.image_widget)
@@ -687,6 +852,11 @@ class CleanPage(QWidget):
         self.main_layout = QHBoxLayout(self)
         self.main_layout.addWidget(self.splitter)
         self.setLayout(self.main_layout)  # Asignar el layout principal a la ventana
+
+    def start_selection(self):
+        # Enable the selection mode so that LassoLabel starts drawing.
+        self.image_widget.enableSelection()
+
     def select_directory(self):
         """Permite al usuario seleccionar un directorio de imágenes."""
         dir_path = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio de Imágenes", "")
@@ -731,6 +901,7 @@ class CleanPage(QWidget):
                 self.current_image_path = path
                 break
         
+        self.display_image(self.current_image_path)
         # 🔹 Verificar si hay una versión procesada en el directorio temporal
         if self.processor is not None:
             temp_image_path = os.path.join(self.processor.temp_dir, image_name)
@@ -754,18 +925,24 @@ class CleanPage(QWidget):
         self.image_widget.setText("Procesando lote...")
         self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
         
+        custom_coords_dict = {}
+        if hasattr(self, 'custom_selections') and self.custom_selections:
+            for img_path, polygons in self.custom_selections.items():
+                # Se asume que polygons es una lista de selecciones y se toma la última
+                custom_coords_dict[img_path] = polygons[-1]
+            
        
             
         # Configurar y lanzar el hilo
-        self.processor = CleaningProcessor(self.image_paths)
+        self.processor = CleaningProcessor(self.image_paths, custom_coords_dict)
         self.processor.progress_updated.connect(self.progress_bar.setValue)
         self.processor.progress_updated.connect(self.update_progress)
         self.processor.error_occurred.connect(self.show_error)
+
         #self.processor.processing_finished.connect(self.on_image_processed)
         self.processor.image_processed.connect(self.on_image_processed)
         self.processor.path_processed.connect(self.on_path_processed)  # 🔹 Conectar señal
-
-
+       
        
         self.save_button = QPushButton("Guardar Imagen", self)
         self.processor.start()
@@ -869,16 +1046,88 @@ class CleanPage(QWidget):
     def display_image(self, image_path):
         image = cv2.imread(image_path)
         if image is not None:
+            # Guardamos las dimensiones originales para el mapeo
+            self.current_image = QImage(image.data, image.shape[1], image.shape[0],
+                                        3 * image.shape[1], QImage.Format_RGB888)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             height, width, channel = image.shape
-            bytes_per_line = 3 * width
-            q_image = QImage(image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+          
+            q_image = QImage(image.data, width, height,  3 * width, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(q_image)
+            self.image_widget.original_image_size = pixmap.size()
+            self.image_widget.setAlignment(Qt.AlignCenter)
             scaled_pixmap = QPixmap.fromImage(q_image).scaled(self.image_widget.size(), Qt.KeepAspectRatio)
             self.image_widget.setPixmap(scaled_pixmap)
+            # Aquí actualizamos _pixmapRect: se asume que el QLabel centra y escala la imagen.
+            # Puedes calcularlo a partir de self.image_widget.size() y el tamaño del pixmap.
+            label_size = self.image_widget.size()
+            pixmap_size = scaled_pixmap.size()
+            x = (label_size.width() - pixmap_size.width()) // 2
+            y = (label_size.height() - pixmap_size.height()) // 2
+            self._pixmapRect = QRect(x, y, pixmap_size.width(), pixmap_size.height())
         else:
             self.image_widget.setText("Imagen no válida o no se pudo cargar.")
-            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
+
     
+    def map_widget_to_image(self, widget_x, widget_y):
+        """ Convierte coordenadas del QLabel (widget) a la imagen original """
+        if not self._pixmapRect or not hasattr(self, 'current_image'):
+            return widget_x, widget_y  # No hay imagen cargada, devolver original
+
+        # 🔹 Factor de escala único basado en la relación ancho
+        scale_factor = self.current_image.width() / self._pixmapRect.width()
+
+        # 🔹 Ajustar coordenadas considerando desplazamientos (offsets)
+        image_x = (widget_x) * scale_factor
+        image_y = (widget_y ) * scale_factor
+
+
+        return int(image_x), int(image_y)
+
+
+
+
+    def clear_selection(self):
+        """Limpia los lazos (polígonos) dibujados en el widget de la imagen actual."""
+        self.image_widget.clearPolygons()
+        QMessageBox.information(self, "Selección Eliminada", "Se han eliminado los lazos de la imagen actual.")
+    def save_custom_selection(self, polygon):
+            # Suponiendo que 'polygon' es una lista de QPoint obtenidos desde el widget.
+            polygon_coords = [self.map_widget_to_image(pt[0], pt[1]) for pt in polygon]
+          
+
+            if not self.current_image_path:
+                return
+            if not hasattr(self, 'polygon_data'):
+                self.polygon_data = []
+
+
+            if self.current_image_path not in self.custom_selections:
+                self.custom_selections[self.current_image_path] = []
+            self.custom_selections[self.current_image_path].append(polygon_coords)
+
+            self.polygon_data.append((self.current_image_path, polygon_coords))
+
+            QMessageBox.information(
+                self,
+                "Selección Guardada",
+                f"Se guardó la selección para {os.path.basename(self.current_image_path)}.\n"
+                f"Número total de lazos: {len(self.custom_selections[self.current_image_path])}"
+            )
+
+            print("Datos de polígonos guardados:", self.polygon_data)
+
+    def erased_selection(self):
+        if hasattr(self, 'polygon_data') and self.polygon_data:
+            removed_polygon = self.polygon_data.pop()
+            self.image_widget.polygons.pop()
+            self.image_widget.update()
+            print(f"Removed polygon: {removed_polygon}")
+        else:
+            print("No polygons to remove.")
+
+
+
 
 class ProcessPage(QWidget):
     def __init__(self):
@@ -1312,6 +1561,9 @@ class AnalyzePage(QWidget):
        
 
         # Botones en columna
+        """var_layout.addWidget(self.create_button("Columna"),self.column)
+        var_layout.addWidget(self.create("Fila", self.))"""
+
         right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
         right_panel.addWidget(self.create_button("Analyze", self.generate_graph))  # Cambiado el nombre
         
@@ -1491,23 +1743,60 @@ class AnalyzePage(QWidget):
 
 
 
+
 class HomePage(QWidget):
     def __init__(self):
         super().__init__()
         self.init_ui()
         
     def init_ui(self):
-        layout = QVBoxLayout()
-        label = QLabel("Página Principal - Bienvenido")
-        label.setFont(QFont('Arial', 18))
-        label.setStyleSheet("color: #2c3e50;")
+        # Layout principal vertical
+        main_layout = QVBoxLayout()
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(40, 40, 40, 40)
         
-        layout.addStretch()
-        layout.addWidget(label)
-        layout.addStretch()
+        # Logo o imagen (opcional)
+        logo = QLabel()
+        pixmap = QPixmap("ruta/a/tu/logo.png")  # Reemplaza con la ruta de tu logo o imagen corporativa
+        if not pixmap.isNull():
+            logo.setPixmap(pixmap.scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            logo.setAlignment(Qt.AlignCenter)
+            main_layout.addWidget(logo)
         
-        self.setLayout(layout)
-        self.setStyleSheet("background-color: #ecf0f1;")
+        # Etiqueta de bienvenida
+        welcome_label = QLabel("Bienvenido al Dector de burbujas")
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_font = QFont("Arial", 24, QFont.Bold)
+        welcome_label.setFont(welcome_font)
+        welcome_label.setStyleSheet("color: #2c3e50;")
+        main_layout.addWidget(welcome_label)
+        
+        # Etiqueta descriptiva o de estado (por ejemplo, "en desarrollo")
+        description_label = QLabel("Aplicación en desarrollo – Estadía en CICY\n¡Próximamente más funciones!")
+        description_label.setAlignment(Qt.AlignCenter)
+        description_font = QFont("Arial", 14)
+        description_label.setFont(description_font)
+        description_label.setStyleSheet("color: #34495e;")
+        main_layout.addWidget(description_label)
+        
+        # Agregar un espacio final para centrar verticalmente
+        main_layout.addStretch()
+
+      
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addStretch()  
+        name_label = QLabel("Desarrollado por : Carlos Garcia Cano")  
+        name_label.setFont(QFont("Arial", 5))
+        name_label.setStyleSheet("color: #95a5a6;")
+        bottom_layout.addWidget(name_label)
+        main_layout.addLayout(bottom_layout)
+        # Aplicar el layout y los estilos generales
+        self.setLayout(main_layout)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #ecf0f1;
+            }
+        """)
 
 
 # ------------------ VENTANA PRINCIPAL -------------------
