@@ -9,6 +9,8 @@ from scipy import ndimage
 from pandas import value_counts
 import numpy as np
 import math
+import matplotlib.pyplot as plt
+import seaborn as sns
 import random
 import pandas as pd
 import tempfile
@@ -16,12 +18,15 @@ from tqdm import tqdm
 from PIL import Image
 import time 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,QComboBox,
     QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton, QFrame, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush
 import shutil
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
 
 
 
@@ -461,30 +466,29 @@ class ImageProcessor(QThread):
         class_id = area // increase
         return class_id
 
+
+# Clean the image by putting white figures 
 class CleaningProcessor(QThread): 
-    progress_updated = pyqtSignal(int)  # Progreso del procesamiento
-    image_processed = pyqtSignal(str)
-    path_processed  = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)  # Señal de error
-    processing_finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
+    progress_updated = pyqtSignal(int)      # Progreso del procesamiento
+    image_processed = pyqtSignal(str)         # Ruta de la imagen procesada
+    path_processed  = pyqtSignal(str)         # Ruta general del directorio temporal
+    error_occurred = pyqtSignal(str)          # Señal de error
+    processing_finished = pyqtSignal(bool)    # Señal de finalización del procesamiento
     
     def __init__(self, image_paths, custom_coords):
         super().__init__()
         self.image_paths = image_paths
         self.is_running = True
-        self.custom_coords = custom_coords
+        self.custom_coords = custom_coords  # Por ejemplo, self.custom_selections
         self.avg_time_per_image = 0
         self.temp_dir = tempfile.mkdtemp()
-       
-
-         # Inicialmente, el procesamiento no ha terminado
-      
-
+    
     def run(self):
         try:
             self.start_time = time.time()
             total_images = len(self.image_paths)
-
+            
+            # Rectángulos por defecto en caso de que una imagen no tenga selecciones personalizadas
             default_rects = [
                 [(589, 860), (1002, 858), (590, 934), (1002, 933)],
                 [(480, 114), (481, 2), (1, 2), (1, 114)],
@@ -492,59 +496,63 @@ class CleaningProcessor(QThread):
                 [(190, 724), (1, 723), (4, 934), (191, 931)],
                 [(1325, 861), (1468, 864), (1468, 931), (1327, 933)]
             ]
+            
             for i, img_path in enumerate(self.image_paths):
                 image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
                 if image is None:
                     continue
 
-                # Si la imagen está en escala de grises, convertirla a RGB
+                # Convertir a RGB (si es necesario) para trabajar con 3 canales
                 if len(image.shape) == 2:
                     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
+                # Si hay selecciones personalizadas para esta imagen, aplicarlas todas
                 if self.custom_coords is not None and img_path in self.custom_coords:
-                    print("Entro")
-                    pts = np.array(self.custom_coords[img_path], np.int32)
-                    pts = pts.reshape((-1, 1, 2))
-                    cv2.fillPoly(image, [pts], (255, 255, 255))
+                    pts_list = []
+                    for polygon in self.custom_coords[img_path]:
+                        pts = np.array(polygon, np.int32)
+                        pts = pts.reshape((-1, 1, 2))
+                        pts_list.append(pts)
+                    # Una única llamada a fillPoly para rellenar todas las áreas
+                    cv2.fillPoly(image, pts_list, (255, 255, 255))
                 else:
-                    # Dibujar los rectángulos
+                    # Si no hay selecciones personalizadas, dibujar los rectángulos por defecto
                     for rect_points in default_rects:
                         image = self.draw_rectangle_from_points(image, rect_points)
-
+                
                 # Guardar la imagen procesada en la carpeta temporal
                 filename = os.path.basename(img_path)
                 temp_output_path = os.path.join(self.temp_dir, filename)
                 cv2.imwrite(temp_output_path, image)
-
+                
                 # Emitir la señal con la ruta de la imagen procesada
                 self.image_processed.emit(temp_output_path)
-
+                
                 # Actualizar el progreso
                 progress = int((i + 1) / total_images * 100)
                 self.progress_updated.emit(progress)
-
+            
             # Emitir la señal con la ruta general de la carpeta temporal
             self.path_processed.emit(self.temp_dir)
-
+        
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
-
+    
     def draw_rectangle_from_points(self, image, points, color=(255, 255, 255), thickness=-1):
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
-
+    
         min_x = min(xs)
         max_x = max(xs)
         min_y = min(ys)
         max_y = max(ys)
-
+    
         top_left = (min_x, min_y)
         bottom_right = (max_x, max_y)
-
+    
         cv2.rectangle(image, top_left, bottom_right, color, thickness)
-
+    
         return image
-
 
 class Tranform_files(QThread):
     path_merged = pyqtSignal(str)
@@ -775,7 +783,7 @@ class CleanPage(QWidget):
         self.timer = QTimer(self)
         self.control_layout = QVBoxLayout()
         self.timer.timeout.connect(self.update_elapsed_time)
-        self.setStyleSheet("background-color: #fff9e6;")
+        self.setStyleSheet("background-color: ##e8f8f5;")
 
         # Panel izquierdo con controles
         self.control_widget = QWidget()
@@ -788,7 +796,20 @@ class CleanPage(QWidget):
         self.image_widget.setStyleSheet("QLabel { color : gray; font: 18px; }")
 
         # Botón para seleccionar directorio de imágenes
-        self.select_dir_button = QPushButton("Seleccionar Directorio de Imágenes")
+        self.select_dir_button = QPushButton("Seleccionar Carpeta")
+        self.select_dir_button.setStyleSheet("""
+            QPushButton {
+                background-color: #c8c241; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
         self.select_dir_button.clicked.connect(self.select_directory)
         self.control_layout.addWidget(self.select_dir_button)
 
@@ -798,17 +819,99 @@ class CleanPage(QWidget):
         self.image_list.itemClicked.connect(self.image_selected)
         self.control_layout.addWidget(self.image_list)
 
-          # Botón para limpiar los lazos creados en la imagen actual
-        self.clear_sel_button = QPushButton("Eliminar Lazos de la Imagen Actual")
-        self.clear_sel_button.clicked.connect(self.clear_selection)
-        self.control_layout.addWidget(self.clear_sel_button)
+        # Botón para activar la selección de lazo
+        self.start_selection_button = QPushButton("Activar selección de lazo")
+        self.start_selection_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #337436;
+            }
+        """)
+        self.start_selection_button.clicked.connect(self.start_selection)
+        self.control_layout.addWidget(self.start_selection_button)
 
         # Botón para procesar todas las imágenes
-        self.process_all_button = QPushButton("Procesamiento Personalizado")
+        self.process_all_button = QPushButton("Procesar lazos creados")
+        self.process_all_button.setStyleSheet("""
+            QPushButton {
+            background-color: #2196F3; /* Azul */
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+            padding: 10px;
+            border-radius: 5px;
+            }
+            QPushButton:hover {
+            background-color: #1d79ca;
+            }
+        """)
         self.process_all_button.clicked.connect(self.convert_images)
         self.control_layout.addWidget(self.process_all_button)
 
-        self.save_button = QPushButton("Guardar Imagen", self)
+        # Botón para eliminar el último lazo
+        self.erased_the_last = QPushButton("Eliminar último lazo")
+        self.erased_the_last.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800; /* Naranja */ 
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #831919;
+            }
+        """)
+        self.erased_the_last.clicked.connect(self.erased_selection)
+        self.control_layout.addWidget(self.erased_the_last)
+
+        # Botón para limpiar los lazos creados en la imagen actual
+        self.clear_sel_button = QPushButton("Eliminar todos los lazos creados")
+        self.clear_sel_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336; /* Rojo */
+                color: white;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #620e0e;
+            }
+        """)
+        self.clear_sel_button.clicked.connect(self.clear_selection)
+        self.control_layout.addWidget(self.clear_sel_button)
+
+        # Botón para guardar los resultados
+        self.save_button = QPushButton("Guardar resultados")
+        self.save_button.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0; /* Púrpura */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;                                      
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #75208b;
+            }
+        """)
+        self.control_layout.addWidget(self.save_button)
+            
+
+        
+
+       
         
         self.save_button.clicked.connect(self.save_image)
         self.control_layout.addWidget(self.save_button)  # 🔹 Agregar a la UI
@@ -828,18 +931,17 @@ class CleanPage(QWidget):
         self.image_widget = LassoLabel()
         self.image_widget.setFixedSize(800, 800)
         self.image_widget.setAlignment(Qt.AlignCenter)
-        self.image_widget.setText("Carga una imagen y presiona 'Iniciar Selección' para dibujar.\n"
-                                "Usa clic izquierdo para dibujar; al soltar se cierra y se llena el lazo.")
+        self.image_widget.setText(
+        "<div style='font-size:21px;'>"
+        "Carga una imagen y presiona 'Activar lazo' para dibujar.<br>"
+        "Usa clic izquierdo para dibujar; al soltar se cierra y se llena el lazo.<br>"
+        "Si una imagen no es aplicado  algun lazo, se  aplicara la limpieza predeterminada."
+        "</div>"
+                                )
         # Connect the signal so that when a polygon is finished its coordinates are saved.
         self.image_widget.selectionFinished.connect(self.save_custom_selection)
 
-        self.start_selection_button = QPushButton("Iniciar Selección")
-        self.start_selection_button.clicked.connect(self.start_selection)
-        self.control_layout.addWidget(self.start_selection_button)
-
-        self.erased_the_last = QPushButton("Eliminate Selection")
-        self.erased_the_last.clicked.connect(self.erased_selection)
-        self.control_layout.addWidget(self.erased_the_last)
+        
 
 
 
@@ -900,8 +1002,9 @@ class CleanPage(QWidget):
             if os.path.basename(path) == image_name:
                 self.current_image_path = path
                 break
-        
+        self.image_widget.clearPolygons()
         self.display_image(self.current_image_path)
+
         # 🔹 Verificar si hay una versión procesada en el directorio temporal
         if self.processor is not None:
             temp_image_path = os.path.join(self.processor.temp_dir, image_name)
@@ -929,7 +1032,7 @@ class CleanPage(QWidget):
         if hasattr(self, 'custom_selections') and self.custom_selections:
             for img_path, polygons in self.custom_selections.items():
                 # Se asume que polygons es una lista de selecciones y se toma la última
-                custom_coords_dict[img_path] = polygons[-1]
+                custom_coords_dict[img_path] = polygons
             
        
             
@@ -1145,7 +1248,7 @@ class ProcessPage(QWidget):
         self.timer = QTimer(self)
         self.control_layout = QVBoxLayout()
         self.timer.timeout.connect(self.update_elapsed_time)
-        self.setStyleSheet("background-color: #fff9e6;")
+        self.setStyleSheet("background-color: #e8f8f5;")
 
         # Panel izquierdo con controles
         self.control_widget = QWidget()
@@ -1159,6 +1262,19 @@ class ProcessPage(QWidget):
 
         # Botón para seleccionar directorio de imágenes
         self.select_dir_button = QPushButton("Seleccionar Directorio de Imágenes")
+        self.select_dir_button.setStyleSheet("""
+            QPushButton {
+                background-color: #c8c241; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
         self.select_dir_button.clicked.connect(self.select_directory)
         self.control_layout.addWidget(self.select_dir_button)
 
@@ -1169,56 +1285,102 @@ class ProcessPage(QWidget):
 
         # Controles de parámetros
         self.parameters_layout = QFormLayout()
+        # Configuración de parámetros para el procesamiento de imágenes
 
-        #CLAHE clip limit
+        # Límite de recorte para CLAHE
         self.clip_limit_spin = QSpinBox()
         self.clip_limit_spin.setRange(1, 10)
         self.clip_limit_spin.setValue(6)
-        self.parameters_layout.addRow("CLAHE clip limit:", self.clip_limit_spin)
+        self.parameters_layout.addRow("Límite de recorte CLAHE:", self.clip_limit_spin)
 
-        #CLAHE grid size
+        # Tamaño de la cuadrícula para CLAHE
         self.grid_size_spin = QSpinBox()
         self.grid_size_spin.setRange(1, 16)
         self.grid_size_spin.setValue(16)
-        self.parameters_layout.addRow("CLAHE grid size:", self.grid_size_spin)
+        self.parameters_layout.addRow("Tamaño de cuadrícula CLAHE:", self.grid_size_spin)
 
-        #Suaviazdo de imagen
+        # Tamaño de suavizado de imagen
         self.blur_size_spin = QSpinBox()
         self.blur_size_spin.setRange(1, 15)
         self.blur_size_spin.setValue(5)
         self.blur_size_spin.setSingleStep(2)
         self.parameters_layout.addRow("Tamaño de suavizado:", self.blur_size_spin)
 
-        
-        # Tamaño del kernel
+        # Tamaño del kernel para el filtro de detección
         self.kernel_size_spin = QSpinBox()
         self.kernel_size_spin.setRange(1, 15)
         self.kernel_size_spin.setValue(3)
         self.kernel_size_spin.setSingleStep(2)
-        self.parameters_layout.addRow("Tamaño del filtro de detección:", self.kernel_size_spin)
+        self.parameters_layout.addRow("Tamaño del kernel de detección:", self.kernel_size_spin)
 
-        # Iteraciones morfológicas
+        # Número de iteraciones para operaciones morfológicas
         self.morph_iterations_spin = QSpinBox()
         self.morph_iterations_spin.setRange(1, 10)
         self.morph_iterations_spin.setValue(2)
-        self.parameters_layout.addRow("Número de ajustes:", self.morph_iterations_spin)
+        self.parameters_layout.addRow("Número de iteraciones morfológicas:", self.morph_iterations_spin)
 
-        # Distancia mínima entre picos
+        # Distancia mínima entre picos detectados
         self.min_distance_peak_spin = QSpinBox()
         self.min_distance_peak_spin.setRange(1, 20)
         self.min_distance_peak_spin.setValue(8)
-        self.parameters_layout.addRow("Separación mínima entre puntos detectados:", self.min_distance_peak_spin)
+        self.parameters_layout.addRow("Distancia mínima entre picos:", self.min_distance_peak_spin)
 
-        # Agregar los controles de parámetros al layout
+        # Aplicar estilos a los QSpinBox
+        spinbox_style = """
+            QSpinBox {
+                background-color: #f0f0f0;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 5px;
+                font-size: 14px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                width: 16px;
+                height: 16px;
+            }
+        """
+
+        self.clip_limit_spin.setStyleSheet(spinbox_style)
+        self.grid_size_spin.setStyleSheet(spinbox_style)
+        self.blur_size_spin.setStyleSheet(spinbox_style)
+        self.kernel_size_spin.setStyleSheet(spinbox_style)
+        self.morph_iterations_spin.setStyleSheet(spinbox_style)
+        self.min_distance_peak_spin.setStyleSheet(spinbox_style)
+
+        # Agregar los controles de parámetros al layout principal
         self.control_layout.addLayout(self.parameters_layout)
 
-        # Botón para procesar imagen
+        # Botón para procesar una imagen individual
         self.process_image_button = QPushButton("Procesar Imagen")
+        self.process_image_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
         self.process_image_button.clicked.connect(self.process_image)
         self.control_layout.addWidget(self.process_image_button)
 
         # Botón para procesar todas las imágenes
         self.process_all_button = QPushButton("Procesar Todas las Imágenes")
+        self.process_all_button.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                font-weight: bold;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #1e88e5;
+            }
+        """)
         self.process_all_button.clicked.connect(self.process_all_images)
         self.control_layout.addWidget(self.process_all_button)
 
@@ -1387,7 +1549,7 @@ class ProcessPage(QWidget):
         self.timer.stop()  # Detener el temporizador cuando el procesamiento finaliza
         if not results_df.empty:
             self.results_df = results_df
-            self.download_button = QPushButton("Descargar CSV", self)
+            self.download_button = QPushButton(f"Descargar CSV {len(self.control_layout.findChildren(QPushButton)) + 1}", self)
             self.download_button.clicked.connect(lambda: self.download_csv(self.results_df))
             self.control_layout.addWidget(self.download_button)
             QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
@@ -1478,6 +1640,8 @@ class AnalyzePage(QWidget):
         super().__init__()
         self.init_ui()
         self.file_paths = {} 
+        self.df = None
+        
         
     def init_ui(self):
         self.setStyleSheet("background-color: #e8f8f5;")
@@ -1485,15 +1649,18 @@ class AnalyzePage(QWidget):
         # 🔹 Gráfico (simulación con QLabel)
         graph_frame = QFrame(self)
         graph_frame.setStyleSheet("background-color: #fff; border: 1px solid #ccc;")
-        graph_frame.setMinimumHeight(200)
+        graph_frame.setMinimumHeight(200)  # Aumentamos la altura para mayor espacio del gráfico
 
         graph_layout = QVBoxLayout(graph_frame)
-        graph_label = QLabel("Gráfica de burbujas", graph_frame)
-        graph_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        graph_label.setStyleSheet("font-size: 20px; color: #333; font-weight: bold;")
-        graph_layout.addWidget(graph_label)
 
-        
+        # Creamos la figura de Matplotlib y el canvas
+        self.figure = Figure()
+        self.canvas = FigureCanvas(self.figure)
+        graph_layout.addWidget(self.canvas)
+  
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        graph_layout.addWidget(self.toolbar)
+       
 
        # 🔹 Controles Inferiores
         control_layout = QHBoxLayout()  # Cambiamos a QHBoxLayout para dividir en dos columnas
@@ -1552,30 +1719,160 @@ class AnalyzePage(QWidget):
 
         control_layout.addLayout(left_panel)  # Agregamos el panel izquierdo
 
-
+        
         # ========== 📊 Panel Derecho ==========
         right_panel = QVBoxLayout()  # Panel Derecho
 
         # Botones de variables en una fila
         var_layout = QHBoxLayout()
-       
 
-        # Botones en columna
-        """var_layout.addWidget(self.create_button("Columna"),self.column)
-        var_layout.addWidget(self.create("Fila", self.))"""
 
-        right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
-        right_panel.addWidget(self.create_button("Analyze", self.generate_graph))  # Cambiado el nombre
-        
+         # ComboBox para seleccionar el eje X
+        self.combo_x = QComboBox()
+        right_panel.addWidget(QLabel("Select X-axis:"))
+        right_panel.addWidget(self.combo_x)
+
+        # ComboBox para seleccionar el eje Y
+        self.combo_y = QComboBox()
+        right_panel.addWidget(QLabel("Select Y-axis:"))
+        right_panel.addWidget(self.combo_y)
+
+        # ComboBox para seleccionar el color
+        self.combo_color = QComboBox()
+        right_panel.addWidget(QLabel("Select Color:"))
+        right_panel.addWidget(self.combo_color)
+
+        # ComboBox para seleccionar el tipo de gráfico
+        self.combo_chart_type = QComboBox()
+        self.combo_chart_type.addItems(["Scatter", "Bar", "Line", "Contour"])
+        right_panel.addWidget(QLabel("Select Chart Type:"))
+        right_panel.addWidget(self.combo_chart_type)
+
+        # Botones de análisis y exportación
+        #right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
+        right_panel.addWidget(self.create_button("Analyze", self.generate_graph))
+        right_panel.addWidget(self.create_button("Export Graph", self.export_graph))
 
         control_layout.addLayout(right_panel)  # Agregamos el panel derecho
 
+         # En tu método init_ui o después de crear self.file_list
+        self.file_list.currentItemChanged.connect(self.update_comboboxes)
         
         # 🔹 Layout Principal
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(graph_frame)
         main_layout.addLayout(control_layout)
         self.setLayout(main_layout)
+
+    def update_comboboxes(self):
+        # Actualiza los ComboBox con las columnas del DataFrame
+        selected_item = self.file_list.currentItem()
+        if selected_item:
+            file_name = selected_item.text()
+            file_path = self.file_paths.get(file_name)
+            if file_path:
+                try:
+                    df = pd.read_csv(file_path)
+                    columns = df.columns.tolist()
+                    self.combo_x.clear()
+                    self.combo_y.clear()
+                    self.combo_color.clear()
+                    self.combo_x.addItems(columns)
+                    self.combo_y.addItems(columns)
+                    self.combo_color.addItems(columns)
+                    self.df = df  # Actualizar self.df con el DataFrame actual
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
+            else:
+                QMessageBox.warning(self, "Error", "No se pudo encontrar la ruta del archivo seleccionado.")
+        else:
+            QMessageBox.warning(self, "Advertencia", "No hay ningún archivo seleccionado en la lista.")
+
+    def generate_graph(self):
+        if self.df is not None:
+            try:
+                print("Generando gráfico...")
+                x = self.combo_x.currentText()
+                y = self.combo_y.currentText()
+                color = self.combo_color.currentText()
+                chart_type = self.combo_chart_type.currentText()
+                print(f"Seleccionado - X: {x}, Y: {y}, Color: {color}, Tipo de Gráfico: {chart_type}")
+
+                # Verificar que las columnas seleccionadas existen en el DataFrame
+                for col in [x, y, color]:
+                    if col not in self.df.columns:
+                        QMessageBox.warning(self, "Error", f"La columna '{col}' no existe en el DataFrame.")
+                        return
+
+                # Comprobar si hay valores nulos en las columnas seleccionadas
+                if self.df[[x, y]].isnull().values.any():
+                    QMessageBox.warning(self, "Advertencia", "Las columnas seleccionadas contienen valores nulos.")
+                    return
+
+                # Limpiar la figura actual
+                self.figure.clear()
+
+                # Crear un nuevo subplot
+                ax = self.figure.add_subplot(111)
+
+                if chart_type == "Scatter":
+                    sns.scatterplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                elif chart_type == "Bar":
+                    sns.barplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                elif chart_type == "Line":
+                    sns.lineplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                elif chart_type == "Pie":
+                    data = self.df.groupby(color)[y].sum()
+                    data.plot.pie(autopct='%1.1f%%', ax=ax)
+                    ax.set_ylabel('')  # Ocultar etiqueta del eje Y
+                    ax.set_xlabel('')
+                elif chart_type == "Contour":
+                    if x in self.df.columns and y in self.df.columns:
+                        x_vals = self.df[x].values
+                        y_vals = self.df[y].values
+                        z_vals = self.df[color].values if color in self.df.columns else None
+                        if z_vals is not None:
+                            sns.kdeplot(x=x_vals, y=y_vals, fill=True, ax=ax, cmap="viridis")
+                            
+                        else:
+                            sns.kdeplot(x=x_vals, y=y_vals, fill=True, ax=ax, cmap="viridis")
+                    else:
+                        QMessageBox.warning(self, "Error", "Las columnas seleccionadas no existen en el DataFrame.")
+                        return
+                else:
+                    QMessageBox.warning(self, "Error", "Tipo de gráfico no soportado.")
+                    return
+
+                ax.set_title('Generated Graph')
+                if chart_type != "Pie":
+                    ax.set_xlabel(x)
+                    ax.set_ylabel(y)
+                    ax.legend(title=color)
+                else:
+                    ax.legend()
+
+                self.canvas.draw()
+                print("Gráfico generado correctamente.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Ocurrió un error al generar el gráfico:\n{str(e)}")
+                print(f"Error al generar el gráfico: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Advertencia", "No hay datos disponibles para graficar.")
+
+
+
+    def export_graph(self):
+        if self.df is not None:
+            save_path, _ = QFileDialog.getSaveFileName(self, "Save Graph", "", "PNG Files (*.png);;JPEG Files (*.jpg);;PDF Files (*.pdf)")
+            if save_path:
+                plt.savefig(save_path)
+                QMessageBox.information(self, "Éxito", f"Gráfico guardado en:\n{save_path}")
+        else:
+            QMessageBox.warning(self, "Advertencia", "No hay datos disponibles para exportar el gráfico.")
+
+
+
+
 
     def create_button(self, text, callback):
         btn = QPushButton(text)
@@ -1713,9 +2010,6 @@ class AnalyzePage(QWidget):
     def choose_data(self):
         print("Elegir datos")
 
-    def generate_graph(self):
-        print("Generar gráfica")
-
     def export_csv(self):
         selected_item =self.file_list.currentItem()
         if not selected_item:
@@ -1834,7 +2128,7 @@ class MainApp(QMainWindow):
         nav_menu = menubar.addMenu("Navegar")
         
         actions = [
-            ("Home", 0),
+            ("Inicio", 0),
             ("Limpiar", 1),
             ("Procesar", 2),
             ("Analizar", 3)
@@ -1853,18 +2147,24 @@ class MainApp(QMainWindow):
 
 
     def show_about(self):
-        QMessageBox.information(
-            self,
-            "Acerca del Sistema",
-            "Sistema Modular de Procesamiento\n"
-            "Versión 4.0\n\n"
-            "Módulos disponibles:\n"
-            "- Limpieza de imágenes\n"
-            "- Procesamiento de datos\n"
-            "- Análisis avanzado",
-            QMessageBox.Ok
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Acerca del Sistema")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(
+            "Sistema Modular de Procesamiento<br>"
+            "Versión 1.0.0<br><br>"
+            "Módulos disponibles:<br>"
+            "- Limpieza de imágenes<br>"
+            "- Deteccion en imágenes<br>"
+            "- Analisis de datos<br><br>"
+            "Para más información, accede al manual proporcionado.<br><br>"
+            "Desarrollado por Carlos Jesús García Cano<br>"
+            'GitHub: <a href="https://github.com/CarlosGarcia-YK">https://github.com/CarlosGarcia-YK</a>'
         )
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        msg_box.exec_()
 
+        
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainApp()
