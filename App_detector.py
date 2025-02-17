@@ -1,3 +1,4 @@
+from optparse import Values
 import sys
 import os
 import cv2
@@ -28,10 +29,10 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 
-
+#------------------QLabel para la seleccion en la imagen--------------------------
 
 class LassoLabel(QLabel):
-    # This signal will emit the polygon as a list of QPoint in image coordinates.
+   
     selectionFinished = pyqtSignal(list)
 
     def __init__(self, parent=None):
@@ -48,10 +49,6 @@ class LassoLabel(QLabel):
         """Enable lasso selection mode."""
         self.selection_enabled = True
 
-    def disableSelection(self):
-        """Disable lasso selection mode."""
-        self.selection_enabled = False
-
     def clearPolygons(self):
         """Clear all drawn polygons."""
         self.polygons = []
@@ -64,16 +61,8 @@ class LassoLabel(QLabel):
         self._computePixmapRect()
         self.update()
 
-    def resizeEvent(self, event):
-        """When the widget is resized, recalc the pixmap rectangle."""
-        super().resizeEvent(event)
-        self._computePixmapRect()
-
     def _computePixmapRect(self):
-        """
-        Compute the rectangle in which the pixmap is drawn (centered and scaled).
-        This rectangle is used to both display the image and limit the drawing area.
-        """
+     
         if self.pixmap() is None:
             self._pixmapRect = None
             return
@@ -89,8 +78,6 @@ class LassoLabel(QLabel):
         y = (label_size.height() - new_height) / 2
         self._pixmapRect = QRect(int(x), int(y), int(new_width), int(new_height))
         self._scale_factor = scale
-
-
 
     def mousePressEvent(self, event):
         if not self.selection_enabled or self.pixmap() is None:
@@ -140,10 +127,7 @@ class LassoLabel(QLabel):
             super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
-        """
-        Paint the label normally (which will show the pixmap) and then draw
-        any finished polygons as well as the current drawing polygon.
-        """
+      
         super().paintEvent(event)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -163,8 +147,6 @@ class LassoLabel(QLabel):
             painter.drawPolyline(qpoly)
         
    
-
-
 
 # ----------------- QTHREAD PARA CADA PAGINA -------------------
 
@@ -216,7 +198,7 @@ class ImageProcessor(QThread):
                 elapsed = time.time() - self.start_time
                 self.progress_updated.emit(progress, elapsed, remaining_time)
                 
-                
+           
             self.progress_updated.emit(100, elapsed, 0)    
             self.batch_finished.emit(pd.DataFrame(all_batch_data))
 
@@ -399,14 +381,7 @@ class ImageProcessor(QThread):
             self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
             return None, None, None, None
 
-    def emit_progress(self, start_time, current_stage, total_stages):
-        # En el método donde inicias el procesamiento
-      
-        elapsed = time.time() - start_time
-        avg_time_per_stage = elapsed / current_stage
-        remaining_time = avg_time_per_stage * (total_stages - current_stage)
-        progress = int((current_stage / total_stages) * 100)
-        self.progress_updated.emit(progress, elapsed, remaining_time)
+
 
     def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path, type):
         colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
@@ -576,9 +551,9 @@ class Tranform_files(QThread):
                 else:
                     # Si se pasa un solo archivo, lo ponemos en una lista
                     self.files = [path_origin]
-            else:
-                # Para otros procesos, podrías guardar path_origin de forma diferente.
-                self.files = None  # o asignarlo según tu lógica
+            else: #No aplicado otro tipo de proceso
+             
+                self.files = None  
                 
     def run(self):
         try:
@@ -892,7 +867,7 @@ class CleanPage(QWidget):
         self.control_layout.addWidget(self.clear_sel_button)
 
         # Botón para guardar los resultados
-        self.save_button = QPushButton("Guardar resultados")
+        self.save_button = QPushButton("Exportar Resultados")
         self.save_button.setStyleSheet("""
             QPushButton {
                 background-color: #9C27B0; /* Púrpura */
@@ -1230,8 +1205,6 @@ class CleanPage(QWidget):
             print("No polygons to remove.")
 
 
-
-
 class ProcessPage(QWidget):
     def __init__(self):
         super().__init__()
@@ -1554,7 +1527,7 @@ class ProcessPage(QWidget):
             self.control_layout.addWidget(self.download_button)
             QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
         else:
-            QMessageBox.warning(self, "Advertencia", "No se detectaron burbujas válidas en las imágenes.")
+            QMessageBox.warning(self, "Advertencia", "No se guardara los datos procesados.")
 
     #Display results image 
     def show_error(self, message):
@@ -1680,8 +1653,40 @@ class AnalyzePage(QWidget):
 
 
         file_controls = QHBoxLayout()
-        file_controls.addWidget(self.create_button("Deleted", self.delete_file))
-        file_controls.addWidget(self.create_button("Add", self.add_file))
+        
+        self.delete_file_button = QPushButton("Deleted")
+        self.delete_file_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #D9534F;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 14px;
+                    padding: 10px;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #C9302C;
+                }
+            """)
+        self.delete_file_button.clicked.connect(self.delete_file)
+        file_controls.addWidget(self.delete_file_button)
+
+        self.add_file_button = QPushButton("Add")
+        self.add_file_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                    font-size: 14px;
+                    padding: 10px;
+                    border-radius: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #358338;
+                }
+            """)
+        self.add_file_button.clicked.connect(self.add_file)
+        file_controls.addWidget(self.add_file_button)
         left_panel.addLayout(file_controls)
 
     
@@ -1692,7 +1697,16 @@ class AnalyzePage(QWidget):
         self.scene_coordinate_value.setFixedWidth(100)
         self.scene_coordinate_value.setRange(-90, 90)
         self.scene_coordinate_value.setValue(-30)
-        self.scene_coordinate_value.setDecimals(4)
+        self.scene_coordinate_value.setDecimals(5)
+        self.scene_coordinate_value.setStyleSheet("""
+        QDoubleSpinBox {
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            background-color: white;
+        }
+         """)
         scene_coord_layout.addWidget(self.scene_coordinate_value)
         left_panel.addLayout(scene_coord_layout)
 
@@ -1704,54 +1718,306 @@ class AnalyzePage(QWidget):
         self.limit_scene_coordinate.setRange(-90, 90)
         self.limit_scene_coordinate.setDecimals(4)
         self.limit_scene_coordinate.setValue(0.5000)
+        self.limit_scene_coordinate.setStyleSheet("""
+        QDoubleSpinBox {
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            background-color: white;
+        }
+         """)
+        
         limit_coord_layout.addWidget(self.limit_scene_coordinate)
         left_panel.addLayout(limit_coord_layout)
        
 
         converter_layout = QHBoxLayout()  # Layout para el panel de conversión
-        converter_layout.addWidget(self.create_button("Merges", self.merge_files))
-        converter_layout.addWidget(self.create_button("Convert File", self.converter))
-        left_panel.addLayout(converter_layout)
 
-        left_panel.addWidget(self.create_button("EXPORT CSV", self.export_csv))
 
+
+        self.Merges_button = QPushButton("Merges")
+        self.Merges_button.setStyleSheet("""
+            QPushButton {
+                background-color: #478EDB; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #3267A0;
+            }
+            """)
+        self.Merges_button.clicked.connect(self.merge_files)
+        converter_layout.addWidget(self.Merges_button)
         
 
+        self.converter_file = QPushButton("Convert File")
+        self.converter_file.setStyleSheet("""
+            QPushButton {
+                background-color: #3CAAC5; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #2B7B8F;
+            }
+            """)
+        self.converter_file.clicked.connect(self.converter)
+        converter_layout.addWidget(self.converter_file)
+
+        left_panel.addLayout(converter_layout)
+
+        self.export_button = QPushButton("EXPORT CSV")
+        self.export_button.setStyleSheet("""
+            QPushButton {
+                background-color: #F0AD4E; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #AB7D3A;
+            }
+            """)
+        self.export_button.clicked.connect(self.export_csv)
+        left_panel.addWidget(self.export_button)
+
+        
         control_layout.addLayout(left_panel)  # Agregamos el panel izquierdo
 
         
         # ========== 📊 Panel Derecho ==========
         right_panel = QVBoxLayout()  # Panel Derecho
 
-        # Botones de variables en una fila
-        var_layout = QHBoxLayout()
 
 
          # ComboBox para seleccionar el eje X
         self.combo_x = QComboBox()
+        self.combo_x.setStyleSheet("""
+            QComboBox {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            }
+            QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: darkgray;
+            border-left-style: solid;
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
+            }
+            QComboBox::down-arrow {
+            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+            width: 10px;
+            height: 10px;
+            }
+        """)
         right_panel.addWidget(QLabel("Select X-axis:"))
         right_panel.addWidget(self.combo_x)
 
         # ComboBox para seleccionar el eje Y
         self.combo_y = QComboBox()
+        self.combo_y.setStyleSheet("""
+                        QComboBox {
+                        background-color: #f0f0f0;
+                        border: 1px solid #ccc;
+                        border-radius: 4px;
+                        padding: 5px;
+                        font-size: 14px;
+                        }
+                        QComboBox::drop-down {
+                        subcontrol-origin: padding;
+                        subcontrol-position: top right;
+                        width: 20px;
+                        border-left-width: 1px;
+                        border-left-color: darkgray;
+                        border-left-style: solid;
+                        border-top-right-radius: 3px;
+                        border-bottom-right-radius: 3px;
+                        }
+                        QComboBox::down-arrow {
+                        image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+                        width: 10px;
+                        height: 10px;
+                        }
+                    """)
+
         right_panel.addWidget(QLabel("Select Y-axis:"))
         right_panel.addWidget(self.combo_y)
 
         # ComboBox para seleccionar el color
         self.combo_color = QComboBox()
+
+        self.combo_color.setStyleSheet("""
+            QComboBox {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            }
+            QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: darkgray;
+            border-left-style: solid;
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
+            }
+            QComboBox::down-arrow {
+            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+            width: 10px;
+            height: 10px;
+            }
+        """)
         right_panel.addWidget(QLabel("Select Color:"))
         right_panel.addWidget(self.combo_color)
 
+        # ComboBox para seleccionar el color
+        self.filter = QHBoxLayout()
+        self.filter_column = QComboBox()
+        self.filter_value = QListWidget()
+
+        self.filter_column.setStyleSheet("""
+            QComboBox {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            }
+            QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: darkgray;
+            border-left-style: solid;
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
+            }
+            QComboBox::down-arrow {
+            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+            width: 10px;
+            height: 10px;
+            }
+        """)
+        self.filter.addWidget(QLabel("Filter by:"))
+        self.filter.addWidget(self.filter_column)
+
+        self.filter_value.setStyleSheet("""
+            QComboBox {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            }
+            QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: darkgray;
+            border-left-style: solid;
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
+            }
+            QComboBox::down-arrow {
+            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+            width: 10px;
+            height: 10px;
+            }
+        """)
+        self.filter.addWidget(QLabel("Value to filter:"))
+        self.filter.addWidget(self.filter_value)
+
+
+        right_panel.addLayout(self.filter)  # Cambia addWidget por addLayout
+
+
         # ComboBox para seleccionar el tipo de gráfico
         self.combo_chart_type = QComboBox()
+        self.combo_chart_type.setStyleSheet("""
+            QComboBox {
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 5px;
+            font-size: 14px;
+            }
+            QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 20px;
+            border-left-width: 1px;
+            border-left-color: darkgray;
+            border-left-style: solid;
+            border-top-right-radius: 3px;
+            border-bottom-right-radius: 3px;
+            }
+            QComboBox::down-arrow {
+            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
+            width: 10px;
+            height: 10px;
+            }
+        """)
         self.combo_chart_type.addItems(["Scatter", "Bar", "Line", "Contour"])
         right_panel.addWidget(QLabel("Select Chart Type:"))
         right_panel.addWidget(self.combo_chart_type)
 
         # Botones de análisis y exportación
         #right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
-        right_panel.addWidget(self.create_button("Analyze", self.generate_graph))
-        right_panel.addWidget(self.create_button("Export Graph", self.export_graph))
+
+
+        self.analyze_button = QPushButton("Analyze")
+        self.analyze_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            """)
+        self.analyze_button.clicked.connect(self.generate_graph)
+        right_panel.addWidget(self.analyze_button)
+
+        self.download = QPushButton("Export Graph")
+        self.download.setStyleSheet("""
+            QPushButton {
+                background-color: #6F42C1; /* Verde */
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            QPushButton:hover {
+                background-color: #51308D;
+            }
+            """)
+        self.download.clicked.connect(self.export_graph)
+        right_panel.addWidget(self.download)
 
         control_layout.addLayout(right_panel)  # Agregamos el panel derecho
 
@@ -1764,6 +2030,9 @@ class AnalyzePage(QWidget):
         main_layout.addLayout(control_layout)
         self.setLayout(main_layout)
 
+
+
+
     def update_comboboxes(self):
         # Actualiza los ComboBox con las columnas del DataFrame
         selected_item = self.file_list.currentItem()
@@ -1773,14 +2042,44 @@ class AnalyzePage(QWidget):
             if file_path:
                 try:
                     df = pd.read_csv(file_path)
-                    columns = df.columns.tolist()
-                    self.combo_x.clear()
-                    self.combo_y.clear()
-                    self.combo_color.clear()
-                    self.combo_x.addItems(columns)
-                    self.combo_y.addItems(columns)
-                    self.combo_color.addItems(columns)
                     self.df = df  # Actualizar self.df con el DataFrame actual
+                    columns = df.columns.tolist()
+
+                    self.combo_x.clear()
+                    # Agregamos "None" antes de las columnas
+                    self.combo_x.addItem("None")
+                    self.combo_x.addItems(columns)
+                    # Por defecto, dejamos seleccionado "None"
+                    self.combo_x.setCurrentIndex(0)
+
+                    self.combo_y.clear()
+                    self.combo_y.addItem("None")
+                    self.combo_y.addItems(columns)
+                    self.combo_y.setCurrentIndex(0)
+
+                    self.filter_column.clear()
+                    self.filter_column.addItem("None")
+                    self.filter_column.addItems(columns)
+                    self.filter_column.setCurrentIndex(0)
+
+
+                    self.filter_column.clear()
+                    self.filter_column.addItem("None")
+                    self.filter_column.addItems(columns)
+                    self.filter_column.setCurrentIndex(0)
+
+
+                    self.combo_color.clear()
+                    self.combo_color.addItem("None")
+                    self.combo_color.addItems(columns)
+                    self.combo_color.setCurrentIndex(0)
+
+                  
+                    self.filter_column.currentTextChanged.connect(self.update_filter_values)
+                    self.update_filter_values()
+                                
+        
+                   
                 except Exception as e:
                     QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
             else:
@@ -1788,66 +2087,100 @@ class AnalyzePage(QWidget):
         else:
             QMessageBox.warning(self, "Advertencia", "No hay ningún archivo seleccionado en la lista.")
 
+    def update_filter_values(self):
+        """Actualiza el combobox de valores únicos basándose en la columna seleccionada"""
+        self.filter_value.clear()
+        self.filter_value.addItem("None")
+
+        selected_column = self.filter_column.currentText()
+
+        if selected_column != "None" and selected_column in self.df.columns:
+            unique_values = self.df[selected_column].dropna().unique()
+            self.filter_value.addItems(map(str, unique_values))
+
+            
     def generate_graph(self):
         if self.df is not None:
             try:
                 print("Generando gráfico...")
-                x = self.combo_x.currentText()
-                y = self.combo_y.currentText()
-                color = self.combo_color.currentText()
-                chart_type = self.combo_chart_type.currentText()
-                print(f"Seleccionado - X: {x}, Y: {y}, Color: {color}, Tipo de Gráfico: {chart_type}")
+                # Obtener valores de los combos y eliminar espacios en blanco
+                x = self.combo_x.currentText().strip()
+                y = self.combo_y.currentText().strip()
+                color = self.combo_color.currentText().strip()
+                filter_column_name = self.filter_column.currentText().strip()  # Nombre de la columna a filtrar
+                filter_value = self.filter_value.currentItem().text().strip()          # Valor a filtrar
+                chart_type = self.combo_chart_type.currentText().strip()
+                
+                print(f"Seleccionado - X: {x}, Y: {y}, Color: {color}, Filter Column: {filter_column_name}, Filter Value: {filter_value}, Tipo de Gráfico: {chart_type}")
 
-                # Verificar que las columnas seleccionadas existen en el DataFrame
-                for col in [x, y, color]:
-                    if col not in self.df.columns:
+                # Validar que las columnas x e y existan
+                for col in [x, y]:
+                    if col == "None" or col not in self.df.columns:
                         QMessageBox.warning(self, "Error", f"La columna '{col}' no existe en el DataFrame.")
                         return
 
-                # Comprobar si hay valores nulos en las columnas seleccionadas
+                # Definir el DataFrame filtrado
+                if filter_column_name != "None" and filter_value != "None":
+                    # Se compara como cadena para evitar problemas de tipo
+                    filtered_df = self.df[self.df[filter_column_name].astype(str) == filter_value]
+                else:
+                    filtered_df = self.df
+
+                # Verificar si hay valores nulos en x o y
                 if self.df[[x, y]].isnull().values.any():
                     QMessageBox.warning(self, "Advertencia", "Las columnas seleccionadas contienen valores nulos.")
                     return
 
-                # Limpiar la figura actual
+                # Limpiar la figura actual y crear un nuevo subplot
                 self.figure.clear()
-
-                # Crear un nuevo subplot
                 ax = self.figure.add_subplot(111)
 
+                # Construir el gráfico según el tipo seleccionado
                 if chart_type == "Scatter":
-                    sns.scatterplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                    if color != "None" and color in self.df.columns:
+                        sns.scatterplot(data=filtered_df, x=x, y=y, hue=color, ax=ax)
+                    else:
+                        sns.scatterplot(data=filtered_df, x=x, y=y, ax=ax)
                 elif chart_type == "Bar":
-                    sns.barplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                    if color != "None" and color in self.df.columns:
+                        sns.barplot(data=filtered_df, x=x, y=y, hue=color, ax=ax)
+                    else:
+                        sns.barplot(data=filtered_df, x=x, y=y, ax=ax)
                 elif chart_type == "Line":
-                    sns.lineplot(data=self.df, x=x, y=y, hue=color, ax=ax)
+                    if color != "None" and color in self.df.columns:
+                        sns.lineplot(data=filtered_df, x=x, y=y, hue=color, ax=ax)
+                    else:
+                        sns.lineplot(data=filtered_df, x=x, y=y, ax=ax)
                 elif chart_type == "Pie":
-                    data = self.df.groupby(color)[y].sum()
+                    # El gráfico de pastel requiere que 'color' (la columna para agrupar) sea válido
+                    if color == "None" or color not in self.df.columns:
+                        QMessageBox.warning(self, "Error", "El gráfico de pastel requiere una columna válida para 'Color'.")
+                        return
+                    data = filtered_df.groupby(color)[y].sum() if filter_column_name != "None" else self.df.groupby(color)[y].sum()
                     data.plot.pie(autopct='%1.1f%%', ax=ax)
-                    ax.set_ylabel('')  # Ocultar etiqueta del eje Y
+                    ax.set_ylabel('')
                     ax.set_xlabel('')
                 elif chart_type == "Contour":
                     if x in self.df.columns and y in self.df.columns:
                         x_vals = self.df[x].values
                         y_vals = self.df[y].values
-                        z_vals = self.df[color].values if color in self.df.columns else None
-                        if z_vals is not None:
-                            sns.kdeplot(x=x_vals, y=y_vals, fill=True, ax=ax, cmap="viridis")
-                            
-                        else:
-                            sns.kdeplot(x=x_vals, y=y_vals, fill=True, ax=ax, cmap="viridis")
+                        sns.kdeplot(x=x_vals, y=y_vals, fill=True, ax=ax, cmap="viridis")
                     else:
                         QMessageBox.warning(self, "Error", "Las columnas seleccionadas no existen en el DataFrame.")
                         return
                 else:
-                    QMessageBox.warning(self, "Error", "Tipo de gráfico no soportado.")
+                    QMessageBox.warning(self, "Error", f"Tipo de gráfico no soportado: {chart_type}")
                     return
 
+                # Configurar etiquetas y leyenda
                 ax.set_title('Generated Graph')
                 if chart_type != "Pie":
                     ax.set_xlabel(x)
                     ax.set_ylabel(y)
-                    ax.legend(title=color)
+                    if color != "None" and color in self.df.columns:
+                        ax.legend(title=color)
+                    else:
+                        ax.legend()
                 else:
                     ax.legend()
 
@@ -1858,8 +2191,6 @@ class AnalyzePage(QWidget):
                 print(f"Error al generar el gráfico: {str(e)}")
         else:
             QMessageBox.warning(self, "Advertencia", "No hay datos disponibles para graficar.")
-
-
 
     def export_graph(self):
         if self.df is not None:
@@ -2033,9 +2364,6 @@ class AnalyzePage(QWidget):
                 QMessageBox.information(self, "Éxito", f"Archivo guardado en:\n{save_path}")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
-
-
-
 
 
 class HomePage(QWidget):
