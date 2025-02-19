@@ -19,15 +19,17 @@ from tqdm import tqdm
 from PIL import Image
 import time 
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,QComboBox,
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,QComboBox, QListWidgetItem,
     QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton, QFrame, QDoubleSpinBox
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect
-from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush
+from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush, QIcon
+
 import shutil
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5 import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+import os
 
 #------------------QLabel para la seleccion en la imagen--------------------------
 
@@ -102,7 +104,7 @@ class LassoLabel(QLabel):
             self.points.append(pos)
             self.update()
         else:
-            super().mouseMoveEvent(event)
+            super().mouseMoveEvent(event) 
 
     def mouseReleaseEvent(self, event):
         if self.drawing and self.selection_enabled and event.button() == Qt.LeftButton:
@@ -1654,7 +1656,7 @@ class AnalyzePage(QWidget):
 
         file_controls = QHBoxLayout()
         
-        self.delete_file_button = QPushButton("Deleted")
+        self.delete_file_button = QPushButton("Eliminar")
         self.delete_file_button.setStyleSheet("""
                 QPushButton {
                     background-color: #D9534F;
@@ -1671,7 +1673,7 @@ class AnalyzePage(QWidget):
         self.delete_file_button.clicked.connect(self.delete_file)
         file_controls.addWidget(self.delete_file_button)
 
-        self.add_file_button = QPushButton("Add")
+        self.add_file_button = QPushButton("Agregar")
         self.add_file_button.setStyleSheet("""
                 QPushButton {
                     background-color: #4CAF50;
@@ -1692,7 +1694,7 @@ class AnalyzePage(QWidget):
     
         # Create a horizontal layout for the first scene coordinate value
         scene_coord_layout = QHBoxLayout()
-        scene_coord_layout.addWidget(QLabel("First Scene_coordinate value"))
+        scene_coord_layout.addWidget(QLabel("Valor de la coordenada"))
         self.scene_coordinate_value = QDoubleSpinBox()
         self.scene_coordinate_value.setFixedWidth(100)
         self.scene_coordinate_value.setRange(-90, 90)
@@ -1712,7 +1714,7 @@ class AnalyzePage(QWidget):
 
         # Create a horizontal layout for the limit scene coordinate value
         limit_coord_layout = QHBoxLayout()
-        limit_coord_layout.addWidget(QLabel("Limit Scene_coordinate value"))
+        limit_coord_layout.addWidget(QLabel("Rango por imagen de coordenada"))
         self.limit_scene_coordinate = QDoubleSpinBox()
         self.limit_scene_coordinate.setFixedWidth(100)
         self.limit_scene_coordinate.setRange(-90, 90)
@@ -1736,7 +1738,7 @@ class AnalyzePage(QWidget):
 
 
 
-        self.Merges_button = QPushButton("Merges")
+        self.Merges_button = QPushButton("Combinar")
         self.Merges_button.setStyleSheet("""
             QPushButton {
                 background-color: #478EDB; /* Verde */
@@ -1754,7 +1756,7 @@ class AnalyzePage(QWidget):
         converter_layout.addWidget(self.Merges_button)
         
 
-        self.converter_file = QPushButton("Convert File")
+        self.converter_file = QPushButton("Tranformar Archivo")
         self.converter_file.setStyleSheet("""
             QPushButton {
                 background-color: #3CAAC5; /* Verde */
@@ -1773,7 +1775,7 @@ class AnalyzePage(QWidget):
 
         left_panel.addLayout(converter_layout)
 
-        self.export_button = QPushButton("EXPORT CSV")
+        self.export_button = QPushButton("EXPORTAR CSV")
         self.export_button.setStyleSheet("""
             QPushButton {
                 background-color: #F0AD4E; /* Verde */
@@ -1855,7 +1857,7 @@ class AnalyzePage(QWidget):
                         }
                     """)
 
-        right_panel.addWidget(QLabel("Select Y-axis:"))
+        right_panel.addWidget(QLabel("Seleccionar Y-axis:"))
         right_panel.addWidget(self.combo_y)
 
         # ComboBox para seleccionar el color
@@ -1885,13 +1887,13 @@ class AnalyzePage(QWidget):
             height: 10px;
             }
         """)
-        right_panel.addWidget(QLabel("Select Color:"))
+        right_panel.addWidget(QLabel("Seleccionar color:"))
         right_panel.addWidget(self.combo_color)
 
         # ComboBox para seleccionar el color
         self.filter = QHBoxLayout()
         self.filter_column = QComboBox()
-        self.filter_value = QListWidget()
+        
 
         self.filter_column.setStyleSheet("""
             QComboBox {
@@ -1917,35 +1919,32 @@ class AnalyzePage(QWidget):
             height: 10px;
             }
         """)
-        self.filter.addWidget(QLabel("Filter by:"))
+        self.filter.addWidget(QLabel("Filtrar por:"))
         self.filter.addWidget(self.filter_column)
 
+
+        # Create a QListWidget for multi-selection with checkboxes.
+        self.filter_value = QListWidget()
+        self.filter_value.setSelectionMode(QListWidget.MultiSelection)
         self.filter_value.setStyleSheet("""
-            QComboBox {
+            QListWidget {
             background-color: #f0f0f0;
             border: 1px solid #ccc;
             border-radius: 4px;
             padding: 5px;
             font-size: 14px;
             }
-            QComboBox::drop-down {
-            subcontrol-origin: padding;
-            subcontrol-position: top right;
-            width: 20px;
-            border-left-width: 1px;
-            border-left-color: darkgray;
-            border-left-style: solid;
-            border-top-right-radius: 3px;
-            border-bottom-right-radius: 3px;
-            }
-            QComboBox::down-arrow {
-            image: url(down_arrow.png);  /* Reemplaza con la ruta de tu imagen de flecha */
-            width: 10px;
-            height: 10px;
-            }
         """)
-        self.filter.addWidget(QLabel("Value to filter:"))
+        # Example: populate with sample items (in practice, fill dynamically)
+        for item_text in ["Opcion 1", "Opcion 2", "Opcion 3"]:
+            item = QListWidgetItem(item_text)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.filter_value.addItem(item)
+        
+        self.filter.addWidget(QLabel("Valores a filtrar:"))
         self.filter.addWidget(self.filter_value)
+
 
 
         right_panel.addLayout(self.filter)  # Cambia addWidget por addLayout
@@ -1978,14 +1977,14 @@ class AnalyzePage(QWidget):
             }
         """)
         self.combo_chart_type.addItems(["Scatter", "Bar", "Line", "Contour"])
-        right_panel.addWidget(QLabel("Select Chart Type:"))
+        right_panel.addWidget(QLabel("Seleccionar tipo de grafica:"))
         right_panel.addWidget(self.combo_chart_type)
 
         # Botones de análisis y exportación
         #right_panel.addWidget(self.create_button("Choose the data", self.choose_data))
 
 
-        self.analyze_button = QPushButton("Analyze")
+        self.analyze_button = QPushButton("Analizar")
         self.analyze_button.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50; /* Verde */
@@ -2002,7 +2001,7 @@ class AnalyzePage(QWidget):
         self.analyze_button.clicked.connect(self.generate_graph)
         right_panel.addWidget(self.analyze_button)
 
-        self.download = QPushButton("Export Graph")
+        self.download = QPushButton("Exportar Grafica")
         self.download.setStyleSheet("""
             QPushButton {
                 background-color: #6F42C1; /* Verde */
@@ -2108,10 +2107,11 @@ class AnalyzePage(QWidget):
                 y = self.combo_y.currentText().strip()
                 color = self.combo_color.currentText().strip()
                 filter_column_name = self.filter_column.currentText().strip()  # Nombre de la columna a filtrar
-                filter_value = self.filter_value.currentItem().text().strip()          # Valor a filtrar
+                filter_values =  [item.text().strip() for item in self.filter_value.selectedItems()]
+         # Valor a filtrar
                 chart_type = self.combo_chart_type.currentText().strip()
                 
-                print(f"Seleccionado - X: {x}, Y: {y}, Color: {color}, Filter Column: {filter_column_name}, Filter Value: {filter_value}, Tipo de Gráfico: {chart_type}")
+                print(f"Seleccionado - X: {x}, Y: {y}, Color: {color}, Filter Column: {filter_column_name}, Filter Value: {filter_values}, Tipo de Gráfico: {chart_type}")
 
                 # Validar que las columnas x e y existan
                 for col in [x, y]:
@@ -2120,11 +2120,11 @@ class AnalyzePage(QWidget):
                         return
 
                 # Definir el DataFrame filtrado
-                if filter_column_name != "None" and filter_value != "None":
-                    # Se compara como cadena para evitar problemas de tipo
-                    filtered_df = self.df[self.df[filter_column_name].astype(str) == filter_value]
+                if filter_column_name != "None" and filter_values and "None" not in filter_values:
+                    filtered_df = self.df[self.df[filter_column_name].astype(str).isin(filter_values)]
                 else:
                     filtered_df = self.df
+
 
                 # Verificar si hay valores nulos en x o y
                 if self.df[[x, y]].isnull().values.any():
@@ -2194,14 +2194,18 @@ class AnalyzePage(QWidget):
 
     def export_graph(self):
         if self.df is not None:
-            save_path, _ = QFileDialog.getSaveFileName(self, "Save Graph", "", "PNG Files (*.png);;JPEG Files (*.jpg);;PDF Files (*.pdf)")
+            save_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Graph",
+                "",
+                "PNG Files (*.png);;JPEG Files (*.jpg);;PDF Files (*.pdf)"
+            )
             if save_path:
-                plt.savefig(save_path)
+                self.canvas.draw()  # Forzar actualización del canvas
+                self.figure.savefig(save_path)
                 QMessageBox.information(self, "Éxito", f"Gráfico guardado en:\n{save_path}")
         else:
             QMessageBox.warning(self, "Advertencia", "No hay datos disponibles para exportar el gráfico.")
-
-
 
 
 
@@ -2376,17 +2380,27 @@ class HomePage(QWidget):
         main_layout = QVBoxLayout()
         main_layout.setSpacing(20)
         main_layout.setContentsMargins(40, 40, 40, 40)
+
+        # Manejar ruta del icono correctamente
+        if getattr(sys, 'frozen', False):
+            # Si la aplicación está empaquetada con PyInstaller
+            base_path = sys._MEIPASS
+        else:
+            # Si se ejecuta como un script normal
+            base_path = os.path.abspath(".")
+
+        icon_path = os.path.join(base_path, "icon_max.ico")
         
         # Logo o imagen (opcional)
         logo = QLabel()
-        pixmap = QPixmap("ruta/a/tu/logo.png")  # Reemplaza con la ruta de tu logo o imagen corporativa
+        pixmap = QPixmap(icon_path)  # Reemplaza con la ruta de tu logo o imagen corporativa
         if not pixmap.isNull():
             logo.setPixmap(pixmap.scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             logo.setAlignment(Qt.AlignCenter)
             main_layout.addWidget(logo)
         
         # Etiqueta de bienvenida
-        welcome_label = QLabel("Bienvenido al Dector de burbujas")
+        welcome_label = QLabel("Dector de sistemas modulares")
         welcome_label.setAlignment(Qt.AlignCenter)
         welcome_font = QFont("Arial", 24, QFont.Bold)
         welcome_label.setFont(welcome_font)
@@ -2394,12 +2408,43 @@ class HomePage(QWidget):
         main_layout.addWidget(welcome_label)
         
         # Etiqueta descriptiva o de estado (por ejemplo, "en desarrollo")
-        description_label = QLabel("Aplicación en desarrollo – Estadía en CICY\n¡Próximamente más funciones!")
+        description_label = QLabel("Aplicación desarrollado para usar con Materiales de poliuretano")
         description_label.setAlignment(Qt.AlignCenter)
         description_font = QFont("Arial", 14)
         description_label.setFont(description_font)
         description_label.setStyleSheet("color: #34495e;")
         main_layout.addWidget(description_label)
+
+        # Obtener rutas absolutas para los documentos
+        pdf_path = os.path.abspath("Resources\Manual_Aplicacion_1.0.0.pdf")
+        zip_path = os.path.abspath("Resources\Muestras.zip")
+
+
+    
+
+        # Obtener rutas absolutas para los documentos
+        pdf_path = get_resource_path("Resources/Manual_Aplicacion_1.0.0.pdf")
+        zip_path = get_resource_path("Resources/Muestras.zip")
+
+        # Etiqueta para descargar el documento PDF usando el protocolo file:///
+        pdf_label = QLabel(f'<a href="file:///{pdf_path}">Descargar Manual</a>')
+        pdf_label.setAlignment(Qt.AlignCenter)
+        pdf_label.setFont(description_font)
+        pdf_label.setStyleSheet("color: #2980b9;")
+        pdf_label.setOpenExternalLinks(True)
+        main_layout.addWidget(pdf_label)
+
+        # Etiqueta para descargar el archivo ZIP usando el protocolo file:///
+        zip_label = QLabel(f'<a href="file:///{zip_path}">Descargar Ejemplos en ZIP</a>')
+        zip_label.setAlignment(Qt.AlignCenter)
+        zip_label.setFont(description_font)
+        zip_label.setStyleSheet("color: #2980b9;")
+        zip_label.setOpenExternalLinks(True)
+        main_layout.addWidget(zip_label)
+
+
+
+
         
         # Agregar un espacio final para centrar verticalmente
         main_layout.addStretch()
@@ -2424,9 +2469,20 @@ class HomePage(QWidget):
 # ------------------ VENTANA PRINCIPAL -------------------
 class MainApp(QMainWindow):
     def __init__(self):
+
+                # Manejar ruta del icono correctamente
+        if getattr(sys, 'frozen', False):
+            # Si la aplicación está empaquetada con PyInstaller
+            base_path = sys._MEIPASS
+        else:
+            # Si se ejecuta como un script normal
+            base_path = os.path.abspath(".")
+
+        icon_path = os.path.join(base_path, "icon_max.ico")
         super().__init__()
         self.setWindowTitle("Sistema Modular")
         self.setGeometry(100, 100, 1200, 800)
+        self.setWindowIcon(QIcon(icon_path))
         
         # Configurar el sistema de páginas
         self.stacked_widget = QStackedWidget()
@@ -2492,7 +2548,17 @@ class MainApp(QMainWindow):
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
 
-        
+def get_resource_path(relative_path):
+                    """ Obtiene la ruta real de los archivos cuando se ejecuta como .exe """
+                    if getattr(sys, 'frozen', False):  # Si está empaquetado con PyInstaller
+                        base_path = sys._MEIPASS
+                    else:
+                        base_path = os.path.abspath(".")
+                    
+                    return os.path.join(base_path, relative_path)
+
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainApp()
