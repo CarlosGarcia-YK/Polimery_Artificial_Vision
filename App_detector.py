@@ -166,6 +166,7 @@ class ImageProcessor(QThread):
         self.is_running = True  # Bandera para controlar la ejecución
         self.total_stages = 11  # Número total de etapas
         self.avg_time_per_image = 0
+        
 
     def run(self):
         try:
@@ -232,7 +233,8 @@ class ImageProcessor(QThread):
 
             # Etapa 3: Umbral Otsu
             _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            binary = cv2.bitwise_not(binary)
+            if params['box'] == True: 
+                binary = cv2.bitwise_not(binary)
          
             self.progress_updated.emit(35, start_time, 0) 
 
@@ -316,7 +318,8 @@ class ImageProcessor(QThread):
 
             # Etapa 3: Umbral Otsu
             _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            binary = cv2.bitwise_not(binary)
+            if params['box'] == True:
+                binary = cv2.bitwise_not(binary)
             current_stage += 1
             
 
@@ -725,6 +728,7 @@ class Tranform_files(QThread):
 
             # Paso 4: Ordenar y guardar
             count_table = count_table.sort_values(by=['Coordenate_type', 'Imagen_idobject_substr'])
+            
             count_table = count_table.rename(columns={
                 'Porcentaje_no_pintado': 'Avg_Porcentaje_no_pintado',
                 'Diametro_mm': 'Avg_Diametro_mm',
@@ -732,6 +736,7 @@ class Tranform_files(QThread):
             })
 
             output_filename = os.path.join(self.temp_dir, f"converted_{os.path.basename(csv_filename)}")
+            count_table['Count'] = count_table['Count']/2
             count_table.to_csv(output_filename, index=False)
             print(f"✅ Archivo convertido guardado en: {output_filename}")
 
@@ -1262,6 +1267,53 @@ class ProcessPage(QWidget):
         self.parameters_layout = QFormLayout()
         # Configuración de parámetros para el procesamiento de imágenes
 
+        self.box_selection_active = False
+        
+        self.box_selection_button = QPushButton("Desactivado")
+        self.box_selection_button.setStyleSheet("""
+            QPushButton {
+            background-color: ##A71A1B;
+            color: white;
+            font-weight: bold;
+            padding: 6px;
+            border-radius: 3px;
+            }
+            QPushButton:hover {
+            background-color: #7D1112;
+            }
+        """)
+        self.box_selection_button.clicked.connect(lambda: [
+            setattr(self, 'box_selection_active', not self.box_selection_active),
+            self.box_selection_button.setText("Activado" if self.box_selection_active else "Desactivado"),
+            self.box_selection_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-weight: bold;
+                padding: 6px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            """ if self.box_selection_active else
+            """
+            QPushButton {
+                background-color: #A71A1B;
+                color: white;
+                font-weight: bold;
+                padding: 6px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #7D1112;
+            }
+            """
+            )
+        ])
+        self.parameters_layout.addRow("Invertir Deteccion:", self.box_selection_button)
+
         # Límite de recorte para CLAHE
         self.clip_limit_spin = QSpinBox()
         self.clip_limit_spin.setRange(1, 10)
@@ -1456,6 +1508,8 @@ class ProcessPage(QWidget):
             'kernel_size': self.kernel_size_spin.value(),
             'morph_iterations': self.morph_iterations_spin.value(),
             'min_distance_peak': self.min_distance_peak_spin.value(),
+            # 'box' will be True if the box selection is active, otherwise False.
+            'box': True if self.box_selection_active else False
             # Agrega más parámetros si es necesario
         }
     #Error about the image
