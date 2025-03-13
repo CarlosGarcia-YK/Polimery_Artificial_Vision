@@ -1,3 +1,4 @@
+import onnxruntime as ort
 from optparse import Values
 import sys
 import os
@@ -14,16 +15,24 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 import pandas as pd
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms
+
+
 import tempfile
 from tqdm import tqdm
 from PIL import Image
 import time 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,QComboBox, QListWidgetItem,
-    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, QPushButton, QFrame, QDoubleSpinBox
+    QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, 
+    QPushButton, QFrame, QDoubleSpinBox, QTabWidget, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect
-from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush, QIcon
+from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush, QIcon 
 
 import shutil
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -184,6 +193,7 @@ class ImageProcessor(QThread):
                     result, _, _, batch_data = self.process_batch(img_path, self.params)
                 if total_images == 1:
                     result, valid_count, _, batch_data = self.process_batch(img_path, self.params)
+                    
                 valid_count = len(batch_data) if batch_data else 0
                 if batch_data is not None:
                     if total_images > 1:# Si es solo mas de una imagen, emitir el resultado
@@ -211,89 +221,6 @@ class ImageProcessor(QThread):
     def stop(self):
         """ Detener el procesamiento """
         self.is_running = False
-    #The process for the images
-    def process_single_image(self, image_path, params):
-        try:
-            start_time = time.time()
-            
-            # Etapa 1: Cargar imagen
-            image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-            if image is None:
-                return None, None, None, None
-        
-            
-            clahe = cv2.createCLAHE(clipLimit=params['clip_limit'], tileGridSize=(params['grid_size'], params['grid_size']))
-            image = clahe.apply(image) if len(image.shape) == 2 else clahe.apply(image[:, :, 0])
-            self.progress_updated.emit(10, start_time, 0)  
-
-            # Etapa 2: Suavizar
-            blur = cv2.GaussianBlur(image, (params['blur_size'], params['blur_size']), 0)
-           
-           
-
-            # Etapa 3: Umbral Otsu
-            _, binary = cv2.threshold(blur, 80, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            if params['box'] == True: 
-                binary = cv2.bitwise_not(binary)
-         
-            self.progress_updated.emit(35, start_time, 0) 
-
-            # Etapa 4: Morfología
-            kernel_size = params.get('kernel_size', 3)
-            morph_iterations = params.get('morph_iterations', 2)
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-            binary_opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=morph_iterations)
-          
-           
-
-            # Etapa 5: Transformada distancia
-            dist_transform = cv2.distanceTransform(binary_opened, cv2.DIST_L2, 5)
-          
-            
-
-            # Etapa 6: Picos locales
-            min_distance_peak = params.get('min_distance_peak', 8)
-            coordinates = peak_local_max(dist_transform, min_distance=min_distance_peak, threshold_abs=0.5)
-            local_max = np.zeros(dist_transform.shape, dtype=bool)
-            local_max[tuple(coordinates.T)] = True
-         
-            
-
-            # Etapa 7: Etiquetado
-            markers, _ = ndimage.label(local_max)
-        
-            self.progress_updated.emit(65, start_time, 0) 
-            
-
-            # Etapa 8: Watershed
-            labels = watershed(-dist_transform, markers, mask=binary_opened)
-          
-          
-
-            # Etapa 9: Cálculo porcentaje
-            total_pixels = binary_opened.size
-            painted_pixels = np.count_nonzero(binary_opened)
-            unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
-            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
-            
-            self.progress_updated.emit(75, start_time, 0) 
-            
-
-            # Etapa 10: Filtro preliminar
-            valid_count = 0
-            self.progress_updated.emit(90, start_time, 0) 
-        
-
-            # Etapa 11: Procesamiento final
-            colored_result, batch_data, valid_count = self.process_bubbles(
-                labels, coordinates, params, unpainted_percentage_adjusted, image_path,1
-            )
-       
-            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
-
-        except Exception as e:
-            self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
-            return None, None, None, None
 
     def process_batch(self, image_path, params):
         try:
@@ -365,14 +292,7 @@ class ImageProcessor(QThread):
 
             # Etapa 10: Filtro preliminar
             valid_count = 0
-            for lbl in range(1, labels.max() + 1):
-                mask = (labels == lbl).astype(np.uint8)
-                area_px = cv2.countNonZero(mask)
-                x, y, w, h = cv2.boundingRect(mask)
-                aspect_ratio = w / h if h > 0 else 0
-                if 0.79 <= aspect_ratio <= 2.5 and params['min_area_threshold'] <= area_px <= params['max_area_threshold']:
-                   pass
-            current_stage += 1
+           
         
 
             # Etapa 11: Procesamiento final
@@ -445,6 +365,211 @@ class ImageProcessor(QThread):
         """Clasifica las burbujas por tamaño."""
         class_id = area // increase
         return class_id
+
+class Image_Automatice(QThread):
+    progress_updated = pyqtSignal(int, float, float) # Progreso del procesamiento
+    image_processed = pyqtSignal(np.ndarray, int)  # Imagen resultante y contador
+    batch_finished = pyqtSignal(pd.DataFrame)      # Resultados finales del lote
+    error_occurred = pyqtSignal(str)  
+    finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
+    
+    def __init__(self, image_paths, params1):
+        super().__init__()
+        self.image_paths = image_paths
+        self.params = params1
+        self.is_running = True  # Bandera para controlar la ejecución
+        self.total_stages = 11  # Número total de etapas
+        self.avg_time_per_image = 0
+        
+
+    def run(self):
+        try:
+            self.start_time = time.time()
+            total_images = len(self.image_paths)
+            processed_images = 0
+            all_batch_data = []  # Inicializar lista para acumular datos
+            total_images = len(self.image_paths)
+            ort_session = ort.InferenceSession("model_cells_state_dictCNPLUS.onnx")
+
+
+           
+            image_transform = transforms.Compose([
+                    transforms.Resize((256, 256)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                        std=[0.229, 0.224, 0.225])
+                ])
+            
+            for idx, img_path in enumerate(self.image_paths):
+                if not self.is_running:
+                    break
+                
+                # Procesar imagen y obtener resultados
+                if total_images > 1:
+                    result, _, _, batch_data = self.process_batch(img_path, self.params,ort_session,image_transform)
+                if total_images == 1:
+                    
+                    result, valid_count, _, batch_data = self.process_batch(img_path, self.params,ort_session,image_transform)
+                    #QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
+                valid_count = len(batch_data) if batch_data else 0
+                if batch_data is not None:
+                    if total_images > 1:# Si es solo mas de una imagen, emitir el resultado
+                         all_batch_data.extend(batch_data)  # Acumular datos válidos
+                if result is not None:
+                    if total_images > 1:  # Solo guardar en batch si hay más de una imagen
+                        all_batch_data.extend(batch_data)
+                    self.image_processed.emit(result, valid_count)
+
+
+                processed_images += 1
+                avg_time_per_image = elapsed / (idx + 1) if idx > 0 else 0
+                remaining_time = avg_time_per_image * (total_images - (idx + 1))
+                progress = int(((idx + 1) / total_images) * 100)  # Fórmula corregida
+                elapsed = time.time() - self.start_time
+                self.progress_updated.emit(progress, elapsed, remaining_time)
+                
+           
+            self.progress_updated.emit(100, elapsed, 0)    
+            self.batch_finished.emit(pd.DataFrame(all_batch_data))
+
+        except Exception as e:
+            self.error_occurred.emit(f"Error: {str(e)}")
+
+    def stop(self):
+        """ Detener el procesamiento """
+        self.is_running = False
+
+    def process_batch(self, image_path, params,ort_session,image_transform):
+        
+        
+        try:
+            
+            exigence = params['exigencia']/100
+            
+            # Etapa 1: Cargar imagen
+            image = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if image is None:
+                return None, None, None, None
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            original_size = (image.shape[1], image.shape[0])  # (ancho, alto)
+            image = Image.fromarray(image)
+            image_tensor = image_transform(image).unsqueeze(0).numpy()
+
+            #---Predicted Mask phase -----------
+            output = ort_session.run(None, {"input": image_tensor})  # 'input' es el nombre del tensor en ONNX
+            prob_map = torch.sigmoid(torch.tensor(output[0])).squeeze().numpy()
+
+            
+
+            predicted_mask = (prob_map > exigence).astype(np.uint8)
+            predicted_mask = cv2.resize(predicted_mask, original_size, interpolation=cv2.INTER_NEAREST)
+            
+            #--------Watersherd Phase ------------
+            # Etapa 5: Transformada distancia
+            dist_transform = cv2.distanceTransform(predicted_mask, cv2.DIST_L2, params['dist_tranform'])
+            coordinates = peak_local_max(dist_transform, min_distance=params['min_distance_peak'], threshold_abs=0.5)
+            local_max = np.zeros(dist_transform.shape, dtype=bool)
+            local_max[tuple(coordinates.T)] = True
+            # Etapa 7: Etiquetado
+            markers, _ = ndimage.label(local_max)
+            
+            
+
+            # Etapa 8: Watershed
+            labels = watershed(-dist_transform, markers, mask=predicted_mask)
+            
+
+
+            # Etapa 9: Cálculo porcentaje
+            total_pixels = predicted_mask.size
+            painted_pixels = np.count_nonzero(predicted_mask)
+            unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
+            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+            
+          
+            
+
+            # Etapa 10: Filtro preliminar
+            valid_count = 0
+            """for lbl in range(1, labels.max() + 1):
+                mask = (labels == lbl).astype(np.uint8)
+                area_px = cv2.countNonZero(mask)
+                x, y, w, h = cv2.boundingRect(mask)
+                aspect_ratio = w / h if h > 0 else 0
+                if 0.79 <= aspect_ratio <= 2.5 and 0 <= area_px <= 15000:
+                   pass
+            current_stage += 1"""
+        
+
+            # Etapa 11: Procesamiento final
+            colored_result, batch_data, valid_count = self.process_bubbles(
+                labels, coordinates, params, unpainted_percentage_adjusted, image_path,2
+            )
+       
+            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
+
+        except Exception as e:
+            self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
+            return None, None, None, None
+
+   
+
+    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path, type):
+        colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
+        batch_data = []
+        image_name = os.path.splitext(os.path.basename(image_path))[0]
+        escala_mm_px = 4.5 / 208
+        valid_count = 0  # Inicializar contador
+
+
+
+        for lbl in range(1, labels.max() + 1):
+                mask = (labels == lbl).astype(np.uint8)
+                area_px = cv2.countNonZero(mask)
+                x, y, w, h = cv2.boundingRect(mask)
+                aspect_ratio = w / h if h > 0 else 0
+
+                if 0.7 <= aspect_ratio < 2.0 and 0 <= area_px <= 15000 and type == 2:
+                    # Cálculos de métricas
+                    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    perimeter_px = cv2.arcLength(contours[0], True) if contours else 0.0
+                    diametro_px = math.sqrt((4 * area_px) / math.pi)
+                    class_id = self.classify_by_size(area_px, increase=150)  
+                    color = self.get_color_by_increment(area_px, 150)
+                    id_value = str(valid_count)
+                    # Añadir a resultados
+                    batch_data.append({
+                        'Imagen_idobject': f"{image_name}_{len(batch_data)}",
+                        'Area_px': area_px,
+                        'Area_mm2': area_px * (escala_mm_px ** 2),
+                        'Perimetro_mm': perimeter_px * escala_mm_px,
+                        'Diametro_mm': diametro_px * escala_mm_px,
+                        'Porcentaje_no_pintado': unpainted_percentage,
+                    # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
+                        'aspect_ratio': aspect_ratio,
+                        'Class_id' : class_id
+                    })
+                    colored_result[labels == lbl] = color
+                    valid_count += 1
+                
+       
+
+        return colored_result, batch_data, valid_count
+   
+    def get_color_by_increment(self,area, increment=150):
+                # Determine the class (range) of the area
+                class_id = area // increment  # Integer division
+                random.seed(class_id)  # Ensure consistent color for the same class
+                return (
+                    random.randint(0, 255), 
+                    random.randint(0, 255), 
+                    random.randint(0, 255)
+                ) 
+    def classify_by_size(self, area, increase=150):
+        """Clasifica las burbujas por tamaño."""
+        class_id = area // increase
+        return class_id
+
 
 
 # Clean the image by putting white figures 
@@ -704,13 +829,32 @@ class Tranform_files(QThread):
             )
             count_table = pd.merge(count_table, avg_porcentaje, on=['Coordenate_type', 'Imagen_idobject_substr'])
 
-            # Fusionar promedio de 'Diametro_mm'
-            avg_diametro = (
-                df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
-                ['Diametro_mm'].mean()
-                .reset_index()
-            )
-            count_table = pd.merge(count_table, avg_diametro, on=['Coordenate_type', 'Imagen_idobject_substr'])
+            if 'Diametro_mm' in df.columns:
+                # Fusionar promedio de 'Diametro_mm'
+                avg_diametro = (
+                    df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                      ['Diametro_mm'].mean()
+                      .reset_index()
+                )
+                count_table = pd.merge(count_table, avg_diametro, on=['Coordenate_type', 'Imagen_idobject_substr'])
+            
+            if 'Area_mm2' in df.columns:
+                # Fusionar promedio de 'Area_mm2'
+                avg_mm2 = (
+                    df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                      ['Area_mm2'].mean()
+                      .reset_index()
+                )
+                count_table = pd.merge(count_table, avg_mm2, on=['Coordenate_type', 'Imagen_idobject_substr'])
+
+            if 'Area_px' in df.columns:
+                # Fusionar promedio de 'Diametro_mm'
+                avg_areapx = (
+                    df.groupby(['Coordenate_type', 'Imagen_idobject_substr'])
+                      ['Area_px'].mean()
+                      .reset_index()
+                )
+                count_table = pd.merge(count_table, avg_areapx, on=['Coordenate_type', 'Imagen_idobject_substr'])
 
             # Fusionar moda de 'Class_id'
             mode_class = (
@@ -1227,8 +1371,9 @@ class ProcessPage(QWidget):
         self.start_time = None
         self.timer = QTimer(self)
         self.control_layout = QVBoxLayout()
+        
         self.timer.timeout.connect(self.update_elapsed_time)
-        self.setStyleSheet("background-color: #e8f8f5;")
+        self.setStyleSheet("background-color: ##e8f8f5;")
 
         # Panel izquierdo con controles
         self.control_widget = QWidget()
@@ -1264,7 +1409,14 @@ class ProcessPage(QWidget):
         self.control_layout.addWidget(self.image_list)
 
         # Controles de parámetros
-        self.parameters_layout = QFormLayout()
+        self.parameters_tab = QTabWidget()
+
+        #---------------- Pestaña Manual -----------------------#
+
+        self.manual_parameters_widget = QWidget()
+        self.manual_parameters_layout = QFormLayout()
+        self.manual_parameters_widget.setLayout(self.manual_parameters_layout)
+        #self.parameters_layout = QFormLayout()
         # Configuración de parámetros para el procesamiento de imágenes
 
         self.box_selection_active = False
@@ -1312,45 +1464,45 @@ class ProcessPage(QWidget):
             """
             )
         ])
-        self.parameters_layout.addRow("Invertir Deteccion:", self.box_selection_button)
+        self.manual_parameters_layout.addRow("Invertir Deteccion:", self.box_selection_button)
 
         # Límite de recorte para CLAHE
         self.clip_limit_spin = QSpinBox()
         self.clip_limit_spin.setRange(1, 10)
         self.clip_limit_spin.setValue(6)
-        self.parameters_layout.addRow("Límite de recorte CLAHE:", self.clip_limit_spin)
+        self.manual_parameters_layout.addRow("Límite de recorte CLAHE:", self.clip_limit_spin)
 
         # Tamaño de la cuadrícula para CLAHE
         self.grid_size_spin = QSpinBox()
         self.grid_size_spin.setRange(1, 16)
         self.grid_size_spin.setValue(16)
-        self.parameters_layout.addRow("Tamaño de cuadrícula CLAHE:", self.grid_size_spin)
+        self.manual_parameters_layout.addRow("Tamaño de cuadrícula CLAHE:", self.grid_size_spin)
 
         # Tamaño de suavizado de imagen
         self.blur_size_spin = QSpinBox()
         self.blur_size_spin.setRange(1, 15)
         self.blur_size_spin.setValue(5)
         self.blur_size_spin.setSingleStep(2)
-        self.parameters_layout.addRow("Tamaño de suavizado:", self.blur_size_spin)
+        self.manual_parameters_layout.addRow("Tamaño de suavizado:", self.blur_size_spin)
 
         # Tamaño del kernel para el filtro de detección
         self.kernel_size_spin = QSpinBox()
         self.kernel_size_spin.setRange(1, 15)
         self.kernel_size_spin.setValue(3)
         self.kernel_size_spin.setSingleStep(2)
-        self.parameters_layout.addRow("Tamaño del kernel de detección:", self.kernel_size_spin)
+        self.manual_parameters_layout.addRow("Tamaño del kernel de detección:", self.kernel_size_spin)
 
         # Número de iteraciones para operaciones morfológicas
         self.morph_iterations_spin = QSpinBox()
         self.morph_iterations_spin.setRange(1, 10)
         self.morph_iterations_spin.setValue(2)
-        self.parameters_layout.addRow("Número de iteraciones morfológicas:", self.morph_iterations_spin)
+        self.manual_parameters_layout.addRow("Número de iteraciones morfológicas:", self.morph_iterations_spin)
 
         # Distancia mínima entre picos detectados
         self.min_distance_peak_spin = QSpinBox()
         self.min_distance_peak_spin.setRange(1, 20)
         self.min_distance_peak_spin.setValue(8)
-        self.parameters_layout.addRow("Distancia mínima entre picos:", self.min_distance_peak_spin)
+        self.manual_parameters_layout.addRow("Distancia mínima entre picos:", self.min_distance_peak_spin)
 
         # Aplicar estilos a los QSpinBox
         spinbox_style = """
@@ -1366,17 +1518,48 @@ class ProcessPage(QWidget):
                 height: 16px;
             }
         """
+        self.parameters_tab.addTab(self.manual_parameters_widget, "Manual")
+        #---------------- Pestaña Automatico -----------------------#
+        self.automatic_parameters_widget = QWidget()
+        self.automatic_parameters_layout = QFormLayout()
+        self.automatic_parameters_widget.setLayout(self.automatic_parameters_layout)
+        #Image_Automatice
+        self.exigencia = QSpinBox()
+        self.exigencia.setRange(10, 100)
+        self.exigencia.setValue(80)
+        self.automatic_parameters_layout.addRow("Porcentage de exigencia", self.exigencia)
 
+        self.dist_tranform = QSpinBox()
+        self.dist_tranform.setRange(1, 5)
+        self.dist_tranform.setValue(5)
+        self.automatic_parameters_layout.addRow("Distancia en transformacion:", self.dist_tranform)
+
+
+        self.min_dist_auto = QSpinBox()
+        self.min_dist_auto.setRange(1, 20)
+        self.min_dist_auto.setValue(8)
+        self.automatic_parameters_layout.addRow("Distancia mínima entre picos:", self.min_dist_auto)
+
+        
+        self.parameters_tab.addTab(self.automatic_parameters_widget, "Automatico")
+        # Agregar los controles de parámetros al layout principal
+        self.parameters_tab.setMinimumHeight(200)
+        self.parameters_tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.control_layout.addWidget(self.parameters_tab)
+        #---------------- Set Estilos -----------------------#
         self.clip_limit_spin.setStyleSheet(spinbox_style)
         self.grid_size_spin.setStyleSheet(spinbox_style)
         self.blur_size_spin.setStyleSheet(spinbox_style)
         self.kernel_size_spin.setStyleSheet(spinbox_style)
         self.morph_iterations_spin.setStyleSheet(spinbox_style)
         self.min_distance_peak_spin.setStyleSheet(spinbox_style)
+        self.exigencia.setStyleSheet(spinbox_style)
+        self.min_dist_auto.setStyleSheet(spinbox_style)
+        self.dist_tranform.setStyleSheet(spinbox_style)
 
-        # Agregar los controles de parámetros al layout principal
-        self.control_layout.addLayout(self.parameters_layout)
-
+        #---------------- Artefactos Fijos -----------------------#
+       
+        
         # Botón para procesar una imagen individual
         self.process_image_button = QPushButton("Procesar Imagen")
         self.process_image_button.setStyleSheet("""
@@ -1512,6 +1695,16 @@ class ProcessPage(QWidget):
             'box': True if self.box_selection_active else False
             # Agrega más parámetros si es necesario
         }
+
+    def get_auto_parameters(self):
+        self.params1= {
+        
+            'exigencia': self.exigencia.value(),
+            'dist_tranform': self.dist_tranform.value(),
+            'min_distance_peak': self.min_dist_auto.value(),
+
+
+    }
     #Error about the image
     def process_image(self):
             """ Procesar una sola imagen en segundo plano """
@@ -1527,9 +1720,17 @@ class ProcessPage(QWidget):
              # Mostrar "Cargando" en el QLabel
             self.image_widget.setText("Cargando...")
             self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")        
-            # Configurar y lanzar el hilo
-            self.get_parameters()
-            self.processor = ImageProcessor([self.current_image_path], self.params)
+
+            if self.parameters_tab.currentIndex() == 0:
+                # Pestaña Manual: obtener parámetros y usar ImageProcessor manual
+                self.get_parameters()
+                self.processor = ImageProcessor([self.current_image_path], self.params)
+            else:
+                # Pestaña Automático: obtener parámetros automáticos y usar AutoImageProcessor
+                self.get_auto_parameters()
+                self.processor = Image_Automatice([self.current_image_path], self.params1)
+            
+            
             self.processor.image_processed.connect(self.on_image_processed)
             self.processor.progress_updated.connect(self.progress_bar.setValue)
             self.processor.batch_finished.connect(self.on_batch_finished) 
@@ -1554,10 +1755,16 @@ class ProcessPage(QWidget):
         self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
         
        
-            
-        # Configurar y lanzar el hilo
-        self.get_parameters()
-        self.processor = ImageProcessor(self.image_paths, self.params)
+
+        if self.parameters_tab.currentIndex() == 0:
+            # Pestaña Manual: obtener parámetros y usar ImageProcessor manual
+            self.get_parameters()
+            self.processor = ImageProcessor(self.image_paths, self.params)
+        else:
+            # Pestaña Automático: obtener parámetros automáticos y usar AutoImageProcessor
+            self.get_auto_parameters()
+            self.processor = Image_Automatice(self.image_paths, self.params1)   
+        
         self.processor.progress_updated.connect(self.progress_bar.setValue)
 
         self.processor.progress_updated.connect(self.update_progress)
@@ -1569,10 +1776,58 @@ class ProcessPage(QWidget):
         
 
     def on_image_processed(self, result_image, valid_count):
-        """ Actualizar la GUI con los resultados de una imagen """
-        self.display_result(result_image)
-        
-        print(self, "Éxito", f"Burbujas detectadas: {valid_count}")
+        """Muestra la imagen procesada en el QLabel con el número de detecciones sobrepuesto."""
+        if result_image is None:
+            self.image_widget.setText("No se pudo procesar la imagen.")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
+            return
+
+        try:
+            # Convertir la imagen a RGB si es necesario
+            if len(result_image.shape) == 2:  # Si es escala de grises
+                result_image = cv2.cvtColor(result_image, cv2.COLOR_GRAY2RGB)
+            elif result_image.shape[2] == 4:  # Si tiene canal alfa (RGBA)
+                result_image = cv2.cvtColor(result_image, cv2.COLOR_RGBA2RGB)
+
+            # Crear una capa de texto semi-transparente sobre la imagen
+            overlay = result_image.copy()
+            h, w, _ = overlay.shape
+            font_scale = max(w, h) / 1500  # Ajustar tamaño de fuente en base a la imagen
+            thickness = int(font_scale * 1)
+
+            # Coordenadas del texto (parte superior central)
+            text = f"Detecciones: {valid_count}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            text_x = (w - text_size[0]) // 2  # Centrar horizontalmente
+            text_y = int(h * 0.1)  # Colocar en la parte superior
+
+            # Dibujar un rectángulo semitransparente detrás del texto
+            overlay = cv2.addWeighted(overlay, 1.0, result_image, 0, 0)  # Copiar la imagen original
+            cv2.rectangle(overlay, 
+                        (text_x - 10, text_y - text_size[1] - 10), 
+                        (text_x + text_size[0] + 10, text_y + 10), 
+                        (0, 0, 0), -1)  # Fondo negro
+            result_image = cv2.addWeighted(overlay, 0.8, result_image, 1 - 0.8, 0)  # 80% opacidad
+
+            # Dibujar el texto encima
+            cv2.putText(result_image, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+            # Redimensionar la imagen para que se ajuste al QLabel
+            height, width, channel = result_image.shape
+            bytes_per_line = 3 * width
+            q_image = QImage(result_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
+
+            # Escalar la imagen para que se ajuste al QLabel
+            scaled_pixmap = QPixmap.fromImage(q_image).scaled(
+                self.image_widget.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.image_widget.setPixmap(scaled_pixmap)
+
+        except Exception as e:
+            self.image_widget.setText(f"Error al mostrar la imagen: {str(e)}")
+            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
+
 
     def on_batch_finished(self, results_df):
         self.timer.stop()  # Detener el temporizador cuando el procesamiento finaliza
@@ -1590,33 +1845,6 @@ class ProcessPage(QWidget):
         """ Mostrar mensajes de error """
         QMessageBox.critical(self, "Error", message)
     
-    def display_result(self, result_image):
-        """Muestra la imagen procesada en el QLabel."""
-        if result_image is None:
-            self.image_widget.setText("No se pudo procesar la imagen.")
-            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
-            return
-
-        try:
-            # Convertir la imagen a RGB si es necesario
-            if len(result_image.shape) == 2:  # Si es escala de grises
-                result_image = cv2.cvtColor(result_image, cv2.COLOR_GRAY2RGB)
-            elif result_image.shape[2] == 4:  # Si tiene canal alfa (RGBA)
-                result_image = cv2.cvtColor(result_image, cv2.COLOR_RGBA2RGB)
-
-            # Redimensionar la imagen para que se ajuste al QLabel
-            height, width, channel = result_image.shape
-            bytes_per_line = 3 * width
-            q_image = QImage(result_image.data, width, height, bytes_per_line, QImage.Format_RGB888)
-
-            # Escalar la imagen para que se ajuste al tamaño del QLabel
-            scaled_pixmap = QPixmap.fromImage(q_image).scaled(
-                self.image_widget.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self.image_widget.setPixmap(scaled_pixmap)
-        except Exception as e:
-            self.image_widget.setText(f"Error al mostrar la imagen: {str(e)}")
-            self.image_widget.setStyleSheet("QLabel { color : red; font: 15px; }")
 
     def download_csv(self, df):
         """Guarda el DataFrame en un archivo CSV."""
@@ -1673,11 +1901,11 @@ class AnalyzePage(QWidget):
         
         
     def init_ui(self):
-        self.setStyleSheet("background-color: #e8f8f5;")
+        self.setStyleSheet("background-color: ##e8f8f5;")
 
         # 🔹 Gráfico (simulación con QLabel)
         graph_frame = QFrame(self)
-        graph_frame.setStyleSheet("background-color: #fff; border: 1px solid #ccc;")
+        graph_frame.setStyleSheet("background-color: #FFFFFF; border: 1px solid #ccc;")
         graph_frame.setMinimumHeight(200)  # Aumentamos la altura para mayor espacio del gráfico
 
         graph_layout = QVBoxLayout(graph_frame)
@@ -2302,17 +2530,22 @@ class AnalyzePage(QWidget):
                 # Verificar si tiene las columnas necesarias
             try:
                 df = pd.read_csv(file_path, nrows=0)  # Leer solo los encabezados
-                required_headers = {'Imagen_idobject', 'Porcentaje_no_pintado', 'Diametro_mm'}
+                required_headers = {'Imagen_idobject', 'Porcentaje_no_pintado'}
+                
+                subsequences_px = {}
                 
                 if required_headers.issubset(df.columns):
-                    self.tranform = Tranform_files(file_path, 2,self.scene_coordinate_value.value(), self.limit_scene_coordinate.value())
-                    self.tranform.path_converted.connect(self.show_converted)  # Conectar la señal
-                    self.tranform.start()
-                    QApplication.processEvents()  # Actualizar la interfaz
-                    print("✅ Archivo convertido correctamente")
+
+                    if 'Diametro_mm' in df.columns or 'Area_mm2' in df.columns  or 'Area_px' in df.columns:
+                        self.tranform = Tranform_files(file_path, 2,self.scene_coordinate_value.value(), self.limit_scene_coordinate.value())
+                        self.tranform.path_converted.connect(self.show_converted)  # Conectar la señal
+                        self.tranform.start()
+                        QApplication.processEvents()  # Actualizar la interfaz
+                        print("✅ Archivo convertido correctamente")
+                   
 
                 else:
-                    QMessageBox.warning(self, "Advertencia", "El archivo debe contener al menos 'Imagen_idobject', 'Diametro_mm' y 'Porcentaje_no_pintado'.")
+                    QMessageBox.warning(self, "Advertencia", "El archivo debe contener 'Imagen_idobject','Porcentaje_no_pintado' y al menos diametros_mm, area_mm2 o area_px.")
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"No se pudo leer el archivo:\n{str(e)}")
                 
@@ -2602,6 +2835,8 @@ class MainApp(QMainWindow):
         msg_box.setStandardButtons(QMessageBox.Ok)
         msg_box.exec_()
 
+#----------------------Other things -------------------------
+
 def get_resource_path(relative_path):
                     """ Obtiene la ruta real de los archivos cuando se ejecuta como .exe """
                     if getattr(sys, 'frozen', False):  # Si está empaquetado con PyInstaller
@@ -2610,7 +2845,6 @@ def get_resource_path(relative_path):
                         base_path = os.path.abspath(".")
                     
                     return os.path.join(base_path, relative_path)
-
 
 
 if __name__ == "__main__":
