@@ -29,9 +29,9 @@ import time
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QFileDialog, QSlider, QHBoxLayout,QComboBox, QListWidgetItem,
     QVBoxLayout, QSplitter, QListWidget, QFormLayout, QSpinBox, QMessageBox, QProgressBar,QAction, qApp, QStackedWidget, QFileDialog, QMessageBox, 
-    QPushButton, QFrame, QDoubleSpinBox, QTabWidget, QSizePolicy
+    QPushButton, QFrame, QDoubleSpinBox, QTabWidget, QSizePolicy,QInputDialog
 )
-from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect
+from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer , QPoint, QRect, QLineF
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPainter, QPen, QPolygon, QColor, QBrush, QIcon 
 
 import shutil
@@ -102,18 +102,41 @@ class LassoLabel(QLabel):
         else:
             super().mousePressEvent(event)
 
+   
+
     def mouseMoveEvent(self, event):
         if self.drawing and self.selection_enabled:
             pos = event.pos()
-            # Clamp the position to the pixmap rectangle if needed.
             if self._pixmapRect:
                 x = max(self._pixmapRect.left(), min(pos.x(), self._pixmapRect.right()))
                 y = max(self._pixmapRect.top(), min(pos.y(), self._pixmapRect.bottom()))
                 pos = QPoint(x, y)
-            self.points.append(pos)
+
+            if self.points:
+                last_point = self.points[-1]
+                dx = abs(pos.x() - last_point.x())
+                dy = abs(pos.y() - last_point.y())
+
+                # Priorizar movimiento en el eje predominante
+                if dx > dy:
+                    pos.setY(last_point.y())  # Mantener el mismo Y para líneas horizontales
+                else:
+                    pos.setX(last_point.x())  # Mantener el mismo X para líneas verticales
+
+                # Suavizar el trazo con interpolación si la distancia es grande
+                line = QLineF(last_point, pos)
+                steps = max(1, int(line.length() // 2))  # Agregar más puntos para suavizar
+                for i in range(1, steps + 1):
+                    interpolated = line.pointAt(i / steps)
+                    self.points.append(interpolated.toPoint())
+
+            else:
+                self.points.append(pos)
+
             self.update()
         else:
-            super().mouseMoveEvent(event) 
+            super().mouseMoveEvent(event)
+
 
     def mouseReleaseEvent(self, event):
         if self.drawing and self.selection_enabled and event.button() == Qt.LeftButton:
@@ -164,7 +187,7 @@ class LassoLabel(QLabel):
 class ImageProcessor(QThread):
     # Señales para comunicación con la GUI
     progress_updated = pyqtSignal(int, float, float) # Progreso del procesamiento
-    image_processed = pyqtSignal(np.ndarray, int)  # Imagen resultante y contador
+    image_processed = pyqtSignal(np.ndarray, int, float)  # Imagen resultante y contador
     batch_finished = pyqtSignal(pd.DataFrame)      # Resultados finales del lote
     error_occurred = pyqtSignal(str)  
     finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
@@ -190,9 +213,9 @@ class ImageProcessor(QThread):
                 
                 # Procesar imagen y obtener resultados
                 if total_images > 1:
-                    result, _, _, batch_data = self.process_batch(img_path, self.params)
+                    result, _, _, batch_data, painted_percentage_zone = self.process_batch(img_path, self.params)
                 if total_images == 1:
-                    result, valid_count, _, batch_data = self.process_batch(img_path, self.params)
+                    result, valid_count, _, batch_data, painted_percentage_zone = self.process_batch(img_path, self.params)
                     
                 valid_count = len(batch_data) if batch_data else 0
                 if batch_data is not None:
@@ -201,7 +224,7 @@ class ImageProcessor(QThread):
                 if result is not None:
                     if total_images > 1:  # Solo guardar en batch si hay más de una imagen
                         all_batch_data.extend(batch_data)
-                    self.image_processed.emit(result, valid_count)
+                    self.image_processed.emit(result, valid_count, painted_percentage_zone)
 
 
                 processed_images += 1
@@ -285,7 +308,8 @@ class ImageProcessor(QThread):
             total_pixels = binary_opened.size
             painted_pixels = np.count_nonzero(binary_opened)
             unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
-            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+            #unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
+            painted_percentage_zone = 100 - unpainted_percentage 
             current_stage += 1
           
             
@@ -297,10 +321,10 @@ class ImageProcessor(QThread):
 
             # Etapa 11: Procesamiento final
             colored_result, batch_data, valid_count = self.process_bubbles(
-                labels, coordinates, params, unpainted_percentage_adjusted, image_path,2
+                labels, coordinates, params, unpainted_percentage, painted_percentage_zone,image_path,2 
             )
        
-            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
+            return colored_result, valid_count, unpainted_percentage, batch_data, painted_percentage_zone
 
         except Exception as e:
             self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
@@ -308,11 +332,12 @@ class ImageProcessor(QThread):
 
 
 
-    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path, type):
+    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, painted_percentage_zone,image_path, type):
         colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
         batch_data = []
         image_name = os.path.splitext(os.path.basename(image_path))[0]
-        escala_mm_px = 4.5 / 208
+        "escala_mm_px = 4.5 / 208"
+        escala_mm_px = params['scale']
         valid_count = 0  # Inicializar contador
 
 
@@ -339,6 +364,7 @@ class ImageProcessor(QThread):
                         'Perimetro_mm': perimeter_px * escala_mm_px,
                         'Diametro_mm': diametro_px * escala_mm_px,
                         'Porcentaje_no_pintado': unpainted_percentage,
+                        'painted_percentage_zone':painted_percentage_zone,
                     # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
                         'aspect_ratio': aspect_ratio,
                         'Class_id' : class_id
@@ -368,7 +394,7 @@ class ImageProcessor(QThread):
 
 class Image_Automatice(QThread):
     progress_updated = pyqtSignal(int, float, float) # Progreso del procesamiento
-    image_processed = pyqtSignal(np.ndarray, int)  # Imagen resultante y contador
+    image_processed = pyqtSignal(np.ndarray, int, float)  # Imagen resultante y contador
     batch_finished = pyqtSignal(pd.DataFrame)      # Resultados finales del lote
     error_occurred = pyqtSignal(str)  
     finished = pyqtSignal(bool)  # Señal de finalización del procesamiento
@@ -406,10 +432,10 @@ class Image_Automatice(QThread):
                 
                 # Procesar imagen y obtener resultados
                 if total_images > 1:
-                    result, _, _, batch_data = self.process_batch(img_path, self.params,ort_session,image_transform)
+                    result, _, _, batch_data, painted_percentage_zone = self.process_batch(img_path, self.params,ort_session,image_transform)
                 if total_images == 1:
                     
-                    result, valid_count, _, batch_data = self.process_batch(img_path, self.params,ort_session,image_transform)
+                    result, valid_count, _, batch_data, painted_percentage_zone = self.process_batch(img_path, self.params, ort_session, image_transform)
                     #QMessageBox.information(self, "Éxito", f"Burbujas detectadas: {valid_count}")
                 valid_count = len(batch_data) if batch_data else 0
                 if batch_data is not None:
@@ -418,7 +444,7 @@ class Image_Automatice(QThread):
                 if result is not None:
                     if total_images > 1:  # Solo guardar en batch si hay más de una imagen
                         all_batch_data.extend(batch_data)
-                    self.image_processed.emit(result, valid_count)
+                    self.image_processed.emit(result, valid_count, painted_percentage_zone)
 
 
                 processed_images += 1
@@ -433,7 +459,12 @@ class Image_Automatice(QThread):
             self.batch_finished.emit(pd.DataFrame(all_batch_data))
 
         except Exception as e:
-            self.error_occurred.emit(f"Error: {str(e)}")
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            error_message = f"Error Image_Automatice: {str(e)}\n"
+            error_message += f"Type: {exc_type}\n"
+            error_message += f"Value: {exc_value}\n"
+            error_message += f"Traceback: {exc_traceback.tb_lineno}\n"
+            self.error_occurred.emit(error_message)
 
     def stop(self):
         """ Detener el procesamiento """
@@ -484,29 +515,21 @@ class Image_Automatice(QThread):
             total_pixels = predicted_mask.size
             painted_pixels = np.count_nonzero(predicted_mask)
             unpainted_percentage = ((total_pixels - painted_pixels) / total_pixels) * 100
-            unpainted_percentage_adjusted = max(0, unpainted_percentage - 15.35)
-            
+           
+            painted_percentage_zone = 100 - unpainted_percentage 
           
             
 
             # Etapa 10: Filtro preliminar
             valid_count = 0
-            """for lbl in range(1, labels.max() + 1):
-                mask = (labels == lbl).astype(np.uint8)
-                area_px = cv2.countNonZero(mask)
-                x, y, w, h = cv2.boundingRect(mask)
-                aspect_ratio = w / h if h > 0 else 0
-                if 0.79 <= aspect_ratio <= 2.5 and 0 <= area_px <= 15000:
-                   pass
-            current_stage += 1"""
         
 
             # Etapa 11: Procesamiento final
             colored_result, batch_data, valid_count = self.process_bubbles(
-                labels, coordinates, params, unpainted_percentage_adjusted, image_path,2
+                labels, coordinates, params, unpainted_percentage, painted_percentage_zone,image_path,2
             )
        
-            return colored_result, valid_count, unpainted_percentage_adjusted, batch_data
+            return colored_result, valid_count, unpainted_percentage, batch_data, painted_percentage_zone
 
         except Exception as e:
             self.error_occurred.emit(f"Error procesando imagen: {str(e)}")
@@ -514,7 +537,7 @@ class Image_Automatice(QThread):
 
    
 
-    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, image_path, type):
+    def process_bubbles(self, labels, coordinates, params, unpainted_percentage, painted_percentage_zone,image_path, type):
         colored_result = np.zeros((labels.shape[0], labels.shape[1], 3), dtype=np.uint8)
         batch_data = []
         image_name = os.path.splitext(os.path.basename(image_path))[0]
@@ -545,12 +568,14 @@ class Image_Automatice(QThread):
                         'Perimetro_mm': perimeter_px * escala_mm_px,
                         'Diametro_mm': diametro_px * escala_mm_px,
                         'Porcentaje_no_pintado': unpainted_percentage,
+                        'painted_percentage_zone':painted_percentage_zone,
                     # 'Coordenadas': bubble_coordinates.tolist(), Add a button futhermore
                         'aspect_ratio': aspect_ratio,
                         'Class_id' : class_id
                     })
-                    colored_result[labels == lbl] = color
+                    
                     valid_count += 1
+                    colored_result[labels == lbl] = color
                 
        
 
@@ -611,15 +636,20 @@ class CleaningProcessor(QThread):
                 if len(image.shape) == 2:
                     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-                # Si hay selecciones personalizadas para esta imagen, aplicarlas todas
+                # Convertir la imagen a formato con canal alfa (RGBA) si no lo tiene aún,
+                # para permitir la transparencia (eliminación de píxeles)
+                """if image.shape[2] == 3:
+                    image = cv2.cvtColor(image, cv2.COLOR_RGB2RGBA)
+                """
+                # Si hay selecciones personalizadas para esta imagen, eliminar (hacer transparentes) esos píxeles
                 if self.custom_coords is not None and img_path in self.custom_coords:
                     pts_list = []
                     for polygon in self.custom_coords[img_path]:
                         pts = np.array(polygon, np.int32)
                         pts = pts.reshape((-1, 1, 2))
                         pts_list.append(pts)
-                    # Una única llamada a fillPoly para rellenar todas las áreas
-                    cv2.fillPoly(image, pts_list, (255, 255, 255))
+                    # Rellenar las áreas seleccionadas con transparencia (0 en el canal alfa)
+                    cv2.fillPoly(image, pts_list, (0, 0, 0, 0))
                 else:
                     # Si no hay selecciones personalizadas, dibujar los rectángulos por defecto
                     for rect_points in default_rects:
@@ -1651,7 +1681,7 @@ class ProcessPage(QWidget):
         dir_path = QFileDialog.getExistingDirectory(self, "Seleccionar Directorio de Imágenes", "")
         if dir_path:
             self.image_paths = [os.path.join(dir_path, f) for f in os.listdir(dir_path)
-                                if f.endswith('.jpg') or f.endswith('.png') or f.endswith('.jpeg') or f.endswith('.tif')]
+                                if f.endswith('.jpg') or f.endswith('.png') or f.endswith('.jpeg') or f.endswith('.tif') or f.endswith('.JPG') or f.endswith('.PNG')]
             self.image_list.clear()
             for img_path in self.image_paths:
                 self.image_list.addItem(os.path.basename(img_path))
@@ -1709,6 +1739,7 @@ class ProcessPage(QWidget):
     def process_image(self):
             """ Procesar una sola imagen en segundo plano """
             self.start_time = time.time()
+            
             if not self.current_image_path:
                 QMessageBox.warning(self, "Error", "Selecciona una imagen primero.")
                 return
@@ -1724,10 +1755,12 @@ class ProcessPage(QWidget):
             if self.parameters_tab.currentIndex() == 0:
                 # Pestaña Manual: obtener parámetros y usar ImageProcessor manual
                 self.get_parameters()
+                self.params['scale'] = 1
                 self.processor = ImageProcessor([self.current_image_path], self.params)
             else:
                 # Pestaña Automático: obtener parámetros automáticos y usar AutoImageProcessor
                 self.get_auto_parameters()
+                self.params1['scale'] = 1
                 self.processor = Image_Automatice([self.current_image_path], self.params1)
             
             
@@ -1754,16 +1787,27 @@ class ProcessPage(QWidget):
         self.image_widget.setText("Procesando lote...")
         self.image_widget.setStyleSheet("QLabel { color : black; font: 18px; }")
         
-       
-
-        if self.parameters_tab.currentIndex() == 0:
-            # Pestaña Manual: obtener parámetros y usar ImageProcessor manual
-            self.get_parameters()
-            self.processor = ImageProcessor(self.image_paths, self.params)
-        else:
-            # Pestaña Automático: obtener parámetros automáticos y usar AutoImageProcessor
-            self.get_auto_parameters()
-            self.processor = Image_Automatice(self.image_paths, self.params1)   
+        # Ask the user to adjust the scale value (in mm per pixel)
+        current_scale = 4.5 / 208  # Default scale value; adjust as needed
+        
+        scale, ok = QInputDialog.getDouble(self, "Set Scale",
+                           f"Scales in mm per pixel:", current_scale, 0.00000000, 1000000000.0, 4)
+                           
+        if ok:
+            reply = QMessageBox.question(self, "Confirm Scale",
+                         f"You entered scale: {scale}. Do you want to proceed?",
+                         QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                if self.parameters_tab.currentIndex() == 0:
+                    # Pestaña Manual: obtener parámetros y usar ImageProcessor manual
+                    self.get_parameters()
+                    self.params['scale'] = scale
+                    self.processor = ImageProcessor(self.image_paths, self.params)
+                else:
+                    # Pestaña Automático: obtener parámetros automáticos y usar AutoImageProcessor
+                    self.get_auto_parameters()
+                    self.params1['scale'] = scale
+                    self.processor = Image_Automatice(self.image_paths, self.params1)   
         
         self.processor.progress_updated.connect(self.progress_bar.setValue)
 
@@ -1775,7 +1819,7 @@ class ProcessPage(QWidget):
         self.processor.start()
         
 
-    def on_image_processed(self, result_image, valid_count):
+    def on_image_processed(self, result_image, valid_count, painted_percentage_zone):
         """Muestra la imagen procesada en el QLabel con el número de detecciones sobrepuesto."""
         if result_image is None:
             self.image_widget.setText("No se pudo procesar la imagen.")
@@ -1796,7 +1840,7 @@ class ProcessPage(QWidget):
             thickness = int(font_scale * 1)
 
             # Coordenadas del texto (parte superior central)
-            text = f"Detecciones: {valid_count}"
+            text = f"Detecciones: {valid_count}  Painted: {painted_percentage_zone}%"
             font = cv2.FONT_HERSHEY_SIMPLEX
             text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
             text_x = (w - text_size[0]) // 2  # Centrar horizontalmente
@@ -1833,7 +1877,10 @@ class ProcessPage(QWidget):
         self.timer.stop()  # Detener el temporizador cuando el procesamiento finaliza
         if not results_df.empty:
             self.results_df = results_df
-            self.download_button = QPushButton(f"Descargar CSV {len(self.control_layout.findChildren(QPushButton)) + 1}", self)
+            random_number = random.randint(1, 100)
+            
+            
+            self.download_button = QPushButton(f"Descargar CSV {random_number}", self)
             self.download_button.clicked.connect(lambda: self.download_csv(self.results_df))
             self.control_layout.addWidget(self.download_button)
             QMessageBox.information(self, "Éxito", "Procesamiento en lote completado.")
