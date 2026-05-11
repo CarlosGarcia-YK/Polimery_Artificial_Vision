@@ -1,0 +1,14 @@
+# your_dataset.yaml
+
+train: C:\Users\yourk\Documents\3.Universitat\Estadia\Clenead_Images\PU122\XY_clean\train  # Ruta a las imágenes de entrenamiento
+val: C:\Users\yourk\Documents\3.Universitat\Estadia\Clenead_Images\PU122\XY_clean\val       # Ruta a las imágenes de validación
+
+# Número de clases
+nc: 1
+
+# Nombres de las clases
+names: ['burbuja']
+
+# Formato de datos
+# Especifica que el conjunto de datos está en formato COCO
+roboflow: 0  # Esto debe ser 0 para evitar conflictos

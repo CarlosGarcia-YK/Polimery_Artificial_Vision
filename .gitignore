@@ -1,40 +1,26 @@
-# Ignorar todos los archivos CSV
-*.csv
-
-# Ignorar imágenes
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.bmp
-*.tiff
-*.svg
-*.ico
-*.webp
-
-# Ignorar archivos temporales de Python
-*.pyc
-*.pyo
-*.pyd
-__pycache__/
-
-# Ignorar otros tipos de archivo
-*.json
-*.xml
-*.log
-*.txt
-*.md
-*.pt
-
+# Ignorar carpeta de imágenes
+Images/
+Fibers/Images/
 Burocratic/
-Clenead_Images/
-Dataset/
-Model/
-Results/
-masks/
-Raw_Images/
+Data/
+Externo/
+model_V1
+Obsolet/
+Rerefences/
 runs/
-XY_Modified_draft/
+Tesis_Versiones
+TransPolymer
 
 
+# Ignorar todos los archivos JSON (si ninguno es necesario)
+*.json
 
+# O si solo quieres ignorar los de una carpeta específica:
+Data/*.json
+
+# Archivos temporales de Word
+~$*
+
+*.pth
+
+~WRL1675.tmp

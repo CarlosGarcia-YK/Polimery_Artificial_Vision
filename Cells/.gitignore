@@ -1,0 +1,40 @@
+# Ignorar todos los archivos CSV
+*.csv
+
+# Ignorar imágenes
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg
+*.ico
+*.webp
+
+# Ignorar archivos temporales de Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Ignorar otros tipos de archivo
+*.json
+*.xml
+*.log
+*.txt
+*.md
+*.pt
+
+Burocratic/
+Clenead_Images/
+Dataset/
+Model/
+Results/
+masks/
+Raw_Images/
+runs/
+XY_Modified_draft/
+
+
+
